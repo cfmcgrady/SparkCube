@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+// scalastyle:off
 package com.alibaba.sparkcube.execution.api
 
 import javax.servlet.ServletContext
@@ -94,15 +95,17 @@ class SparkCubeSource extends CacheApiRequestContext {
   @PUT
   @Path("caches/{viewName}")
   @Consumes(Array(MediaType.APPLICATION_JSON))
-  def createCache(cacheInfo: StringParam,
-                  @PathParam("viewName") viewName: String): ActionResponse = {
+  def createCache(@PathParam("viewName") viewName: String,
+                  stringParam: String): ActionResponse = {
     try {
-      val flag = cacheManager.createCache(sparkSession, viewName,
-        JsonParserUtil.parseCacheFormatInfo(cacheInfo.getParam))
-      if (flag) {
-        ActionResponse("SUCCEED", "")
-      } else {
-        ActionResponse("FAILED", "")
+      withStringParam(stringParam) { cacheInfo =>
+        val flag = cacheManager.createCache(sparkSession, viewName,
+          JsonParserUtil.parseCacheFormatInfo(cacheInfo.getParam))
+        if (flag) {
+          ActionResponse("SUCCEED", "")
+        } else {
+          ActionResponse("FAILED", "")
+        }
       }
     } catch {
       case t: Throwable => ActionResponse("ERROR", t.getMessage)
@@ -125,12 +128,14 @@ class SparkCubeSource extends CacheApiRequestContext {
   @PUT
   @Path("caches/{cacheId}/enable")
   @Consumes(Array(MediaType.APPLICATION_JSON))
-  def setQueryRewrite(enableParam: StringParam,
-      @PathParam("cacheId") cacheId: String): ActionResponse = {
+  def setQueryRewrite(@PathParam("cacheId") cacheId: String,
+                      stringParam: String): ActionResponse = {
     try {
-      val identifier = CacheIdentifier(cacheId)
-      cacheManager.alterCacheRewrite(sparkSession, identifier, enableParam.getParam.toBoolean)
-      ActionResponse("SUCCEED", "")
+      withStringParam(stringParam) { enableParam =>
+        val identifier = CacheIdentifier(cacheId)
+        cacheManager.alterCacheRewrite(sparkSession, identifier, enableParam.getParam.toBoolean)
+        ActionResponse("SUCCEED", "")
+      }
     } catch {
       case t: Throwable => ActionResponse("FAILED", t.getMessage)
     }
@@ -150,12 +155,14 @@ class SparkCubeSource extends CacheApiRequestContext {
   @PUT
   @Path("caches/{cacheId}/partitions/delete")
   @Consumes(Array(MediaType.APPLICATION_JSON))
-  def removeCacheDataPartition(deletePartition: StringParam,
-      @PathParam("cacheId") cacheId: String): ActionResponse = {
+  def removeCacheDataPartition(@PathParam("cacheId") cacheId: String,
+                               stringParam: String): ActionResponse = {
     try {
-      val identifier = CacheIdentifier(cacheId)
-      cacheManager.dropCachePartition(sparkSession, identifier, Seq(deletePartition.getParam))
-      ActionResponse("SUCCEED", "")
+      withStringParam(stringParam) { deletePartition =>
+        val identifier = CacheIdentifier(cacheId)
+        cacheManager.dropCachePartition(sparkSession, identifier, Seq(deletePartition.getParam))
+        ActionResponse("SUCCEED", "")
+      }
     } catch {
       case t: Throwable => ActionResponse("FAILED", t.getMessage)
     }
@@ -164,20 +171,22 @@ class SparkCubeSource extends CacheApiRequestContext {
   @PUT
   @Path("caches/{cacheId}/build")
   @Consumes(Array(MediaType.APPLICATION_JSON))
-  def buildCache( buildInfo: StringParam,
-      @PathParam("cacheId") cacheId: String): ActionResponse = {
+  def buildCache(@PathParam("cacheId") cacheId: String,
+                 stringParam: String): ActionResponse = {
     try {
-      val identifier = CacheIdentifier(cacheId)
-      val (saveMode, build) = JsonParserUtil.parseBuildInfo(buildInfo.getParam)
-      saveMode match {
-        case SaveMode.Append =>
-          cacheManager.asyncBuildCache(sparkSession, identifier, build)
-        case SaveMode.Overwrite =>
-          cacheManager.asyncRefreshCache(sparkSession, identifier, build)
-        case _ =>
-          throw new UnsupportedOperationException("not supported save mode")
+      withStringParam(stringParam) { buildInfo =>
+        val identifier = CacheIdentifier(cacheId)
+        val (saveMode, build) = JsonParserUtil.parseBuildInfo(buildInfo.getParam)
+        saveMode match {
+          case SaveMode.Append =>
+            cacheManager.asyncBuildCache(sparkSession, identifier, build)
+          case SaveMode.Overwrite =>
+            cacheManager.asyncRefreshCache(sparkSession, identifier, build)
+          case _ =>
+            throw new UnsupportedOperationException("not supported save mode")
+        }
+        ActionResponse("SUCCEED", "")
       }
-      ActionResponse("SUCCEED", "")
     } catch {
       case t: Throwable => ActionResponse("FAILED", t.getMessage)
     }
@@ -193,13 +202,15 @@ class SparkCubeSource extends CacheApiRequestContext {
   @PUT
   @Path("caches/{cacheId}/periodBuild")
   @Consumes(Array(MediaType.APPLICATION_JSON))
-  def triggerPeriodBuildCache(periodBuildParam: StringParam,
-      @PathParam("cacheId") cacheId: String): ActionResponse = {
+  def triggerPeriodBuildCache(@PathParam("cacheId") cacheId: String,
+                              stringParam: String): ActionResponse = {
     try {
-      val identifier = CacheIdentifier(cacheId)
-      val periodBuildInfo = JsonParserUtil.parsePeriodBuildInfo(periodBuildParam.getParam)
-      cacheManager.autoBuildCache(sparkSession, identifier, periodBuildInfo)
-      ActionResponse("SUCCEED", "")
+      withStringParam(stringParam) { periodBuildParam =>
+        val identifier = CacheIdentifier(cacheId)
+        val periodBuildInfo = JsonParserUtil.parsePeriodBuildInfo(periodBuildParam.getParam)
+        cacheManager.autoBuildCache(sparkSession, identifier, periodBuildInfo)
+        ActionResponse("SUCCEED", "")
+      }
     } catch {
       case t: Throwable => ActionResponse("FAILED", t.getMessage)
     }
@@ -234,6 +245,11 @@ class SparkCubeSource extends CacheApiRequestContext {
     } catch {
       case t: Throwable => ActionResponse("FAILED", t.getMessage)
     }
+  }
+
+  private def withStringParam[T](json: String)(body: (StringParam) => T): T = {
+    val sp = JsonParserUtil.parseStringParam(json)
+    body(sp)
   }
 }
 

@@ -115,6 +115,10 @@ object JsonParserUtil extends Logging{
     fromCacheFormatInfo(parse(json))
   }
 
+  def parseStringParam(json: String): StringParam = {
+    fromString(parse(json))
+  }
+
   private def fromBuildJsonValue(value: JValue): (SaveMode, Option[BuildInfo]) = value match {
     case JSortedObject(
     ("data", data),
@@ -200,6 +204,16 @@ object JsonParserUtil extends Logging{
 
   def getTriggerTime(timeStr: String): Long = {
     DateTimeFormat.forPattern("yyyy-MM-dd HH:mm:ss").parseDateTime(timeStr).getMillis
+  }
+
+  private def fromString(value: JValue): StringParam = value match {
+    case JSortedObject(
+    ("param", JString(stringParam))
+    ) =>
+      new StringParam(stringParam)
+    case _ =>
+      throw SparkAgent.analysisException(s"Invalid create cache request parameter." +
+        s" ${compact(render(value))}")
   }
 
   private def fromCacheFormatInfo(value: JValue): CacheFormatInfo = value match {
