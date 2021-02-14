@@ -22,19 +22,17 @@ import javax.servlet.ServletContext
 import javax.servlet.http.HttpServletRequest
 import javax.ws.rs._
 import javax.ws.rs.core.{Context, MediaType}
-
 import org.apache.hadoop.conf.Configuration
-import org.eclipse.jetty.server.handler.ContextHandler
-import org.eclipse.jetty.servlet.{ServletContextHandler, ServletHolder}
+import org.spark_project.jetty.server.handler.ContextHandler
+import org.spark_project.jetty.servlet.{ServletContextHandler, ServletHolder}
 import org.glassfish.jersey.server.ServerProperties
 import org.glassfish.jersey.servlet.ServletContainer
-
 import org.apache.spark.sql.{SaveMode, SparkAgent, SparkSession}
-
 import com.alibaba.sparkcube.CubeManager
 import com.alibaba.sparkcube.catalog.{CubeCacheInfo, RawCacheInfo}
 import com.alibaba.sparkcube.execution.{BuildHistory, PeriodBuildInfo}
 import com.alibaba.sparkcube.optimizer.CacheIdentifier
+import org.apache.spark.internal.Logging
 
 /**
  * Due to the limitation of YARN proxy server and knox, v1 api only accept GET and PUT request, and
@@ -42,7 +40,7 @@ import com.alibaba.sparkcube.optimizer.CacheIdentifier
  */
 
 @Path("/v1")
-class SparkCubeSource extends CacheApiRequestContext {
+class SparkCubeSource extends CacheApiRequestContext with Logging {
 
   @GET
   @Path("caches")
@@ -244,6 +242,27 @@ class SparkCubeSource extends CacheApiRequestContext {
       ActionResponse("SUCCEED", "")
     } catch {
       case t: Throwable => ActionResponse("FAILED", t.getMessage)
+    }
+  }
+
+  @PUT
+  @Path("run")
+  def sql(stringParam: String): ActionResponse = {
+    try {
+      withStringParam(stringParam) { sql =>
+        println("=== start run ===")
+        val session = SparkSession.getActiveSession
+          .getOrElse(SparkSession.getDefaultSession.get)
+        val df = session.sql(sql.getParam)
+        df.explain(true)
+        df.show()
+        println("=== end run ===")
+      }
+      ActionResponse("SUCCEED", "")
+    } catch {
+      case t: Throwable =>
+        logError(t.getMessage, t)
+        ActionResponse("FAILED", t.getMessage)
     }
   }
 
@@ -467,8 +486,25 @@ object SparkCubeSource {
 
   def getServletHandler(cacheManager: CubeManager): ServletContextHandler = {
     val jerseyContext = new ServletContextHandler(ServletContextHandler.NO_SESSIONS)
+
+
+//    val jerseyContext = classOf[ServletContextHandler].getConstructors
+//      .filter(_.getParameterCount == 1)
+//      .head
+//      .newInstance(0.asInstanceOf[Object])
+
     jerseyContext.setContextPath("/rcApi")
-//    val config = new ResourceConfig().packages("org.apache.spark.sql.execution.api")
+
+
+//    classOf[ContextHandler].getClass.getMethods
+//      .filter(m => m.getName == "setContextPath")
+//      .foreach(println)
+//    val setContextPathMethod = classOf[ContextHandler].getClass.getMethods
+//      .filter(m => m.getName == "setContextPath" && m.getParameterTypes.size == 1)
+//      .head
+//    setContextPathMethod.invoke(jerseyContext, "rcApi")
+
+    //    val config = new ResourceConfig().packages("org.apache.spark.sql.execution.api")
 //      .register(classOf[JacksonFeature])
 //    val holder: ServletHolder = new ServletHolder(new ServletContainer(config))
     val holder: ServletHolder = new ServletHolder(classOf[ServletContainer])
@@ -477,7 +513,13 @@ object SparkCubeSource {
     holder.setInitParameter(ServerProperties.PROVIDER_PACKAGES,
       "com.alibaba.sparkcube.execution.api")
     CacheRootFromServletContext.setCacheManager(jerseyContext, cacheManager)
+
     jerseyContext.addServlet(holder, "/*")
+
+//    val addServletMethod = classOf[ServletContextHandler].getClass.getMethods
+//      .filter(m => m.getName == "addServlet" && m.getParameterTypes.size == 2)
+//      .head
+//    addServletMethod.invoke(jerseyContext, Seq(holder, "/*"))
     jerseyContext
   }
 }
@@ -490,6 +532,11 @@ private[api] object CacheRootFromServletContext {
       contextHandler: ContextHandler,
       cacheManager: CubeManager): Unit = {
     contextHandler.setAttribute(attribute, cacheManager)
+
+//    val setAttributeMethod = classOf[ContextHandler].getClass.getMethods
+//      .filter(m => m.getName == "setAttribute" && m.getParameterTypes.size == 2)
+//      .head
+//    setAttributeMethod.invoke(contextHandler, Seq(attribute, cacheManager))
   }
 
   def getCacheManager(context: ServletContext): CubeManager = {

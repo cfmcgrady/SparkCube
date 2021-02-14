@@ -45,8 +45,14 @@ private[spark] class CubeSharedState(val session: SparkSession) extends Logging 
     logInfo("Initializing SparkCube web UI")
     val statusStore = session.sharedState.statusStore
     session.sparkContext.ui.foreach(new SparkCubeTab(statusStore, _, this))
-    session.sparkContext.ui.foreach(_.attachHandler(
-      SparkCubeSource.getServletHandler(cubeManager)))
+    session.sparkContext.ui.foreach(sui => {
+      val attachMethod = sui.getClass.getMethods
+        .filter(m => m.getName == "attachHandler" && m.getParameterTypes.size == 1)
+        .head
+      attachMethod.invoke(sui, SparkCubeSource.getServletHandler(cubeManager).asInstanceOf[Object])
+//      sui.attachHandler(
+//        SparkCubeSource.getServletHandler(cubeManager))
+    })
   }
 
 }

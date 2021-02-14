@@ -10,6 +10,17 @@
 
     <repositories>
         <repository>
+            <id>aliyun</id>
+            <name>Nexus Release Repository</name>
+            <url>http://maven.aliyun.com/nexus/content/groups/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+        <repository>
             <id>swoop-inc</id>
             <url>https://dl.bintray.com/swoop-inc/maven/</url>
         </repository>
@@ -21,42 +32,42 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>2.6.7.3</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.jaxrs</groupId>
             <artifactId>jackson-jaxrs-json-provider</artifactId>
             <version>2.5.4</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-annotations</artifactId>
             <version>2.6.7</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
             <version>2.6.7</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.jaxrs</groupId>
             <artifactId>jackson-jaxrs-base</artifactId>
             <version>2.5.4</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
         </dependency>
 
         <dependency>
             <groupId>org.scala-lang</groupId>
             <artifactId>scala-compiler</artifactId>
             <version>2.11.12</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
         </dependency>
 
         <dependency>
@@ -76,28 +87,39 @@
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-server</artifactId>
             <version>${jetty.version}</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
         </dependency>
 
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-servlet</artifactId>
             <version>${jetty.version}</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
         </dependency>
 
         <dependency> <!-- Spark dependency -->
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_2.11</artifactId>
             <version>${spark.version}</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
         </dependency>
 
         <dependency> <!-- Spark dependency -->
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-hive_2.11</artifactId>
             <version>${spark.version}</version>
-            <scope>provided</scope>
+            <scope>${spark.scope}</scope>
+        </dependency>
+        <dependency> <!-- Spark dependency -->
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-yarn_2.11</artifactId>
+            <version>${spark.version}</version>
+            <scope>${spark.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>cloud.fchen</groupId>
+            <artifactId>spark-extensions-core_2.11</artifactId>
+            <version>1.0.1-s2.4.3-SNAPSHOT</version>
         </dependency>
 
         <dependency> <!-- Spark dependency -->
@@ -107,17 +129,41 @@
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+            <scope>test</scope>
+            <classifier>tests</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+            <scope>test</scope>
+            <classifier>tests</classifier>
+        </dependency>
     </dependencies>
 
     <properties>
         <jetty.version>9.4.27.v20200227</jetty.version>
-        <spark.version>2.4.4</spark.version>
+<!--        <jetty.version>9.3.24.v20180605</jetty.version>-->
+<!--        <spark.version>2.4.3</spark.version>-->
+        <spark.version>2.4.7</spark.version>
+        <spark.scope>provided</spark.scope>
+        <scala.binary.version>2.11</scala.binary.version>
     </properties>
 
     <profiles>
         <profile>
             <id>spark-2.4</id>
             <!-- default config -->
+        </profile>
+        <profile>
+            <id>dev</id>
+            <properties>
+                <spark.scope>compile</spark.scope>
+            </properties>
         </profile>
         <profile>
             <id>spark-2.3.4</id>

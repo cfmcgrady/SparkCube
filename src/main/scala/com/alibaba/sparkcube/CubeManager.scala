@@ -598,7 +598,9 @@ class CubeManager extends Logging {
   }
 
   private def getCacheDefaultPath(session: SparkSession, dbName: String): Path = {
-    new Path(new Path(session.sessionState.conf.warehousePath, dbName), "_CACHE")
+//    new Path(new Path(session.sessionState.conf.warehousePath, dbName), "_CACHE")
+//    new Path(s"/user/chenfu/tmp/_CACHE/${dbName}")
+    new Path(s"/tmp/cache/${dbName}")
   }
 
   private def addCacheMetaInExternalCatalog(

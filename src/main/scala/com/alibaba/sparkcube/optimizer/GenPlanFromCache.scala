@@ -73,14 +73,14 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
   }
 
   def treeMatching(plan: LogicalPlan): Seq[LogicalPlan] = {
+    println(s"matchingPlan ${plan}")
     val tryMatch = matchingPlan(plan).filter(validatePlan)
     if (tryMatch.nonEmpty) {
       // pre-order matching
       tryMatch
     } else {
       plan match {
-        case p @ PhysicalOperation(fields, filters, child)
-          if p != child =>
+        case p @ PhysicalOperation(fields, filters, child) if p != child =>
           def filtering(ch: LogicalPlan): LogicalPlan = if (filters.nonEmpty) {
             Filter(filters.reduce(And), ch)
           } else {
@@ -121,6 +121,7 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
   def matchingPlan(plan: LogicalPlan): Seq[LogicalPlan] = plan match {
     case Aggregate(_, _, Expand(_, _, PhysicalOperation(_, _, _))) =>
       // TODO real CUBE support
+      println("hello")
       Nil
     case Aggregate(ge, ae, p @ PhysicalOperation(fields, filters, t @ TableLike(ident)))
       if cm.isCached(session, ident.toString) =>
@@ -141,6 +142,7 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
       }
     case p @ PhysicalOperation(_, _, _) =>
       matchingRaw(p)
+//    case _ => Nil
   }
 
   def matchingRaw(
@@ -231,8 +233,15 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
       // schema and a different data schema
       val allFields = meta.dataSchema
       // TODO matching col in better way
-      val partitionSchema = StructType(storage.partitionSpec.getOrElse(Nil).map(pf =>
-        allFields.find(f => pf.equalsIgnoreCase(f.name)).get))
+      println("==== allFields ====")
+      allFields.map(println)
+      println("==== allFields ====")
+      val partitionSchema = StructType(storage.partitionSpec.getOrElse(Nil).map(pf => {
+        println(pf)
+        allFields.find(f => pf.equalsIgnoreCase(f.name)).get
+      }))
+      println("===1===")
+
       // TODO matching col in better way
       val allSchema = cache.cacheSchema.dims.map(df =>
         StructField(df, allFields.find(_.name.equalsIgnoreCase(df)).get.dataType)) ++
