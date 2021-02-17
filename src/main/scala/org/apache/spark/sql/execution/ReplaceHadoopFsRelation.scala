@@ -3,11 +3,12 @@ package org.apache.spark.sql.execution
 
 import com.alibaba.sparkcube.ZIndexFileInfo
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.{SparkSession, Strategy}
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BinaryComparison, BinaryOperator, EqualNullSafe, EqualTo, Expression, HiveHash, Literal, Or}
 import org.apache.spark.sql.catalyst.plans.logical.{Filter, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.execution.datasources.{FileIndex, HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionDirectory}
+import org.apache.spark.sql.execution.datasources.{FileIndex, HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionDirectory, PartitionPath}
 import org.apache.spark.sql.types.StructType
 
 //class replacehadoopfsrelation extends Strategy {
@@ -20,103 +21,180 @@ import org.apache.spark.sql.types.StructType
 
 case class ReplaceHadoopFsRelation() extends Rule[LogicalPlan] {
   override def apply(plan: LogicalPlan): LogicalPlan = {
-    plan transform {
-      case logicalRelation @ LogicalRelation(relation: HadoopFsRelation, _, _, _)
-        if ReplaceHadoopFsRelation.inCacheRelation.contains(
-          s"${relation.fileFormat.toString.toLowerCase()}.`${relation.location.rootPaths.mkString(",").toLowerCase()}`") =>
-
-        val tableIdentifier = s"${relation.fileFormat.toString.toLowerCase()}.`${relation.location.rootPaths.mkString(",").toLowerCase()}`"
-        val paths = Seq(new Path(
-          ReplaceHadoopFsRelation.inCacheRelation(tableIdentifier)
-        ))
-        val newLocation = new InMemoryFileIndex(SparkSession.active, paths, Map.empty, Option(relation.schema))
-        val newRelation = relation.copy(location = newLocation)(SparkSession.active)
-        logicalRelation.copy(relation = newRelation)
+    plan resolveOperators {
+//      case logicalRelation @ LogicalRelation(relation: HadoopFsRelation, _, _, _)
+//        if ReplaceHadoopFsRelation.inCacheRelation.contains(
+//          s"${relation.fileFormat.toString.toLowerCase()}.`${relation.location.rootPaths.mkString(",").toLowerCase()}`") =>
+//
+//        val tableIdentifier = s"${relation.fileFormat.toString.toLowerCase()}.`${relation.location.rootPaths.mkString(",").toLowerCase()}`"
+//        val paths = Seq(new Path(
+//          ReplaceHadoopFsRelation.inCacheRelation(tableIdentifier)
+//        ))
+//        val newLocation = new InMemoryFileIndex(SparkSession.active, paths, Map.empty, Option(relation.schema))
+//        val newRelation = relation.copy(location = newLocation)(SparkSession.active)
+//        logicalRelation.copy(relation = newRelation)
 
 //      case logicalRelation @ LogicalRelation(relation: HadoopFsRelation, _, _, _) =>
 //        println("dddddebug")
 //        val y = s"${relation.fileFormat.toString.toLowerCase()}.`${relation.location.rootPaths.mkString(",").toLowerCase()}`"
 //        println(y)
+//        val x = ReplaceHadoopFsRelation.relationMetadata.keys.headOption.getOrElse("")
+//        println(x == y)
 //        ReplaceHadoopFsRelation.relationMetadata.foreach(println)
 //        logicalRelation
+//      case f @ Filter(cond,
+//      logicalRelation @ LogicalRelation(
+//      relation @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _)) =>
+//        println("ddddda")
+//        f
 
       case f @ Filter(cond,
       logicalRelation @ LogicalRelation(
       relation @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _))
         if ReplaceHadoopFsRelation.relationMetadata.contains(
-          s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString("")}`") =>
-        println(logicalRelation.catalogTable)
+          s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`") =>
+        println("aaaaa")
         println(relation.fileFormat)
         println(s"${relation.fileFormat}.`${location.rootPaths.mkString("")}`")
-        val paths = ReplaceHadoopFsRelation.relationMetadata(
-          s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString("")}`"
-        )
-//        val paths = ReplaceHadoopFsRelation.metadata
-          .findTouchFileByExpression(f.condition)
-          .map(i => {
-            logInfo(s"input file: ${i}")
-            i
-          })
-          .map(i => new Path(i.file))
+//        val paths = ReplaceHadoopFsRelation.relationMetadata(
+//          s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`"
+//        )
+////        val paths = ReplaceHadoopFsRelation.metadata
+//          .findTouchFileByExpression(f.condition)
+//          .map(i => {
+//            logInfo(s"input file: ${i}")
+//            i
+//          })
+//          .map(i => new Path(i.file))
 //        val paths = location.inputFiles.map(f => new Path(f))
-        val newLocation = new InMemoryFileIndex(SparkSession.active, paths, Map.empty, Option(relation.schema))
-        val newRelation = relation.copy(location = newLocation)(SparkSession.active)
+        val zIndexMetadata = ReplaceHadoopFsRelation.relationMetadata(
+          s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`"
+        )
+//        val newLocation2 = new InMemoryFileIndex(relation.sparkSession,
+//          Seq(new Path(zIndexMetadata.basePath)), Map.empty, Option(relation.schema)) {
+//          override def listFiles(partitionFilters:  Seq[Expression], dataFilters:  Seq[Expression]): Seq[PartitionDirectory] = {
+//            println("dddddddddddddddfff")
+//            val files = super.listFiles(partitionFilters, dataFilters)
+//            if (partitionSpec().partitionColumns.isEmpty) {
+//              val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.getName, f))).toMap
+//              val paths = ReplaceHadoopFsRelation.relationMetadata(
+//                s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`"
+//              )
+//                //        val paths = ReplaceHadoopFsRelation.metadata
+//                .findTouchFileByExpression(f.condition)
+//                .map(i => {
+//                  logInfo(s"input file: ${i}")
+//                  i
+//                })
+//                .map(zi => nameToFileStatus(zi.file))
+//                .toSeq
+////              PartitionDirectory(InternalRow.empty, paths) :: Nil
+//              throw new UnsupportedOperationException
+//            } else {
+//              throw new UnsupportedOperationException
+//            }
+//
+//          }
+//        }
+
+        val newLocation = new ZIndexInMemoryFileIndex(
+          s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`",
+          relation.sparkSession, Seq(new Path(zIndexMetadata.basePath)), Map.empty, Option(relation.schema))
+        val newRelation = relation.copy(location = newLocation)(relation.sparkSession)
         val newLogicalRelation = logicalRelation.copy(relation = newRelation)
         val newFilter = f.copy(cond, newLogicalRelation)
+        println("-------new filter------")
+        println(newFilter)
+        println(newLocation)
         newFilter
     }
   }
 }
 
+class ZIndexInMemoryFileIndex(
+     tableIdentifier: String,
+     sparkSessionx: SparkSession,
+     rootPathsSpecifiedx: Seq[Path],
+     parametersx: Map[String, String],
+     userSpecifiedSchemax: Option[StructType]) extends InMemoryFileIndex(
+  sparkSessionx, rootPathsSpecifiedx, parametersx, userSpecifiedSchemax) {
+
+  override def listFiles(partitionFilters:  Seq[Expression], dataFilters:  Seq[Expression]): Seq[PartitionDirectory] = {
+    val files = super.listFiles(partitionFilters, dataFilters)
+    if (partitionSpec().partitionColumns.isEmpty) {
+      val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
+      println("------name to file-----")
+      nameToFileStatus.foreach(println)
+      println("------name to file-----")
+      val paths = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
+        //        val paths = ReplaceHadoopFsRelation.metadata
+        .findTouchFileByExpression(dataFilters.head)
+        .map(i => {
+          logInfo(s"input file: ${i}")
+          i
+        })
+        .map(zi => nameToFileStatus(zi.file.toLowerCase))
+        .toSeq
+      PartitionDirectory(InternalRow.empty, paths) :: Nil
+    } else {
+//      val ps = partitionSpec()
+//      val pathToPartitionValue = ps.partitions.map(partitionPath => {
+//        (partitionPath.path, partitionPath.values)
+//      }).toMap
+      val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
+
+      val selectedPartitions = files.map(_.values).toSet
+      val metadata = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
+
+      val selectedFiles = metadata.fileMetadta
+        .filter(fm => {
+          fm.filePartitionPath.isDefined && selectedPartitions.contains(fm.filePartitionPath.get.values)
+        })
+
+      val selectedMetadata = metadata.copy(fileMetadta = selectedFiles)
+
+      logInfo(s"dataFilters size: ${dataFilters.size}.")
+      val filter = if (dataFilters.size > 1) {
+        dataFilters.reduce((l, r) => And(l, r))
+      } else {
+        dataFilters.head
+      }
+      selectedMetadata.findTouchFileByExpression(filter)
+        .map(i => {
+          logInfo(s"input file: ${i}")
+          i
+        })
+        .map(zi => (zi, nameToFileStatus(zi.file.toLowerCase)))
+        .groupBy {
+          case (zi, fs) =>
+            zi.filePartitionPath
+        }.map {
+          case (Some(partitionPath), array) =>
+            PartitionDirectory(partitionPath.values, array.map(_._2))
+        }.toSeq
+//      throw new UnsupportedOperationException
+    }
+
+  }
+
+}
+
 object ReplaceHadoopFsRelation {
 
-  var inCacheRelation = Map[String, String]()
+//  var inCacheRelation = Map[String, String]()
   var relationMetadata = Map[String, ZIndexMetadata]()
   var metadata: ZIndexMetadata = _
 
-  def tt(logicalPlan: LogicalPlan): Unit = {
-    println(logicalPlan)
-
-    println("start")
-    logicalPlan.foreach {
-      case f @ Filter(cond, LogicalRelation(relation: HadoopFsRelation, _, _, _)) =>
-        println("----condition----")
-//        1.equals()
-        cond.foreach(println)
-        cond.map {
-//          case and @ And(left)
-          case e: EqualTo =>
-            println(s"left ${e.left}, right ${e.right}")
-            println(s"left ${e.left.getClass.getCanonicalName}, right ${e.right.getClass.getCanonicalName}")
-          case _ =>
-        }
-        println("----condition----")
-        relation.location.inputFiles.foreach(println)
-        relation.location.rootPaths.foreach(println)
-      case _ =>
-    }
-    println("end")
-
-    logicalPlan.foreach(x => println(x.getClass.getCanonicalName))
-
-    Filter
-//    logicalPlan.map()
-
-  }
 }
 
 case class ZIndexFileInfoV2(
     file: String,
     numRecords: Long,
     minIndex: ArrayZIndexV2,
-    maxIndex: ArrayZIndexV2) {
+    maxIndex: ArrayZIndexV2,
+    filePartitionPath: Option[PartitionPath] = None) {
 
   def zIndexPrefix: Array[Int] = {
-//    var n = 0
-//    for (i <- 0 until minIndex.indices.length) {
-//      if ()
-//
-//    }
     var i = 0
     while (i < maxIndex.indices.length && minIndex.indices(i) == maxIndex.indices(i)) {
       i += 1
@@ -125,7 +203,15 @@ case class ZIndexFileInfoV2(
   }
 }
 
+/**
+ * 分区表的情况，可能部分分区命中cache，而部分分区未能命中。
+ *
+ * @param bitLength
+ * @param colIndices
+ * @param fileMetadta
+ */
 case class ZIndexMetadata(
+    basePath: String,
     bitLength: Int,
     colIndices: Map[String, Int],
     fileMetadta: Array[ZIndexFileInfoV2]) {
@@ -135,12 +221,21 @@ case class ZIndexMetadata(
 
   }
 
-  def inCacheFiles(selectedPartitions: Seq[PartitionDirectory]): (Seq[PartitionDirectory], Array[ZIndexFileInfoV2]) = {
+  def inCachedFiles(selectedPartitions: Seq[PartitionDirectory]): (Seq[PartitionDirectory], Array[ZIndexFileInfoV2]) = {
+
+//    var result = (Seq[PartitionDirectory], Array[ZIndexFileInfoV2])
+    var inCachedResult: Array[ZIndexFileInfoV2] = null
+    var nonInCachedResult: Seq[PartitionDirectory] = null
 
     val cachedFiles = fileMetadta.map(_.file)
-    selectedPartitions.foreach(pd => {
+    selectedPartitions.foreach {
+      case partitionDirectory: PartitionDirectory
+        if partitionDirectory.files.exists(fileStat => cachedFiles.contains(fileStat.getPath.getName)) =>
 
-    })
+        partitionDirectory.values
+//      case pd => nonInCachedResult += pd
+//        null
+    }
 
     null
   }

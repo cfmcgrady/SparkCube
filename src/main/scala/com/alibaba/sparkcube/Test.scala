@@ -70,7 +70,6 @@ object Test {
 
     val q = ndf.filter("col_1 == 2 or col_2 == 2")
     q.explain(true)
-    ReplaceHadoopFsRelation.tt(q.queryExecution.analyzed)
     q.show()
 
   }
@@ -135,6 +134,7 @@ object Test {
 //    })
 
     ReplaceHadoopFsRelation.metadata = ZIndexMetadata(
+      "",
       Integer.toBinaryString(dataLength - 1).length,
       Map("col_1" -> 0, "col_2" -> 1),
       metadata
@@ -211,6 +211,7 @@ object Test {
       })
 
     ReplaceHadoopFsRelation.metadata = ZIndexMetadata(
+      "",
       Integer.toBinaryString(1000 - 1).length,
       Map("col_1" -> 0),
       metadata

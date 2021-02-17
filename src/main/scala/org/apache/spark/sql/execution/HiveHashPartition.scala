@@ -56,7 +56,9 @@ class PartitionExtensions extends ExtensionsBuilder with Logging {
   override def apply(sessionExtensions: SparkSessionExtensions): Unit = {
     logInfo("register extension PartitionExtensions.")
     sessionExtensions.injectPlannerStrategy(_ => new RepartitionByHiveHashStrategy)
-    sessionExtensions.injectOptimizerRule(_ => ReplaceHadoopFsRelation())
+//    sessionExtensions.injectOptimizerRule(_ => ReplaceHadoopFsRelation())
+    sessionExtensions.injectResolutionRule(_ => ReplaceHadoopFsRelation())
+//    sessionExtensions.injectPostHocResolutionRule(_ => ReplaceHadoopFsRelation())
   }
 }
 

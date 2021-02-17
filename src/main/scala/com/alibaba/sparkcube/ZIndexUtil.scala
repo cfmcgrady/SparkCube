@@ -21,20 +21,21 @@ import java.util.UUID
 
 import scala.collection.mutable.WrappedArray
 
-import org.apache.spark.sql.{Column, SparkSession}
+import org.apache.spark.sql.{Column, DataFrame, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.HiveHash
+import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionSpec}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.execution.{ArrayZIndexV2, ReplaceHadoopFsRelation, ZIndexFileInfoV2, ZIndexMetadata}
 
 object ZIndexUtil {
-
 
   def createZIndex(spark: SparkSession,
                    inputFormat: String,
                    inputPath: String,
                    cols: Array[String],
                    fileNum: Int = 1000,
-                   format: String = "parquet"): Unit = {
+                   format: String = "parquet",
+                   partitionCols: Option[Seq[String]] = None): Unit = {
 
     spark.udf.register("arrayZIndex", (vec: Seq[Int]) => ArrayZIndexV2.create(vec).indices)
 
@@ -57,13 +58,13 @@ object ZIndexUtil {
           )
         ): _*
       )
-    indexDF
+    val writeDF = indexDF
       .repartitionByRange(fileNum, col("__zIndex__"))
       .write
       .format(format)
       .mode("overwrite")
-      .save(s"/tmp/zindex/${table}")
-
+    partitionCols.foreach(cols => writeDF.partitionBy(cols: _*))
+    writeDF.save(s"/tmp/zindex/${table}")
 
     val tempView = s"__cache_${UUID.randomUUID().toString.replace("-", "")}"
     spark.read
@@ -79,15 +80,20 @@ object ZIndexUtil {
         |) GROUP BY file
         |""".stripMargin)
 //    stat.show()
-    val metadata = stat.collect()
+    collectPartitionInfo(stat)
+    var metadata = stat.collect()
       .map(r => {
         ZIndexFileInfoV2(
           r.getAs[String]("file"),
           r.getAs[Long]("numRecords"),
-          ArrayZIndexV2(r.getAs[WrappedArray[Int]]("minZIndex").map(_.toInt).toArray),
-          ArrayZIndexV2(r.getAs[WrappedArray[Int]]("maxZIndex").map(_.toInt).toArray)
+          ArrayZIndexV2(r.getAs[WrappedArray[Long]]("minZIndex").map(_.toInt).toArray),
+          ArrayZIndexV2(r.getAs[WrappedArray[Long]]("maxZIndex").map(_.toInt).toArray)
         )
       })
+
+    if (partitionCols.isDefined) {
+      metadata = setFilePartitionInfo(metadata, collectPartitionInfo(stat))
+    }
 
     // compute data length.
     val dataLength = hashDF.selectExpr(
@@ -109,17 +115,35 @@ object ZIndexUtil {
     println("----- metadata -----")
 
     val zindexMetadata = ZIndexMetadata(
+      s"/tmp/zindex/${table}",
       Integer.toBinaryString(dataLength - 1).length,
       cols.zipWithIndex.toMap,
       metadata
     )
 
     ReplaceHadoopFsRelation.relationMetadata +=
-      (s"${format}.`file:/tmp/zindex/${table}`" -> zindexMetadata)
-    ReplaceHadoopFsRelation.inCacheRelation +=
-      (s"${inputFormat.toLowerCase()}.`file:${inputPath.toLowerCase()}`" ->
-        s"file:/tmp/zindex/${table}"
-        )
+      (s"${inputFormat.toLowerCase()}.`file:${inputPath.toLowerCase()}`" -> zindexMetadata)
   }
 
+  private def collectPartitionInfo(df: DataFrame): Option[PartitionSpec] = {
+    var res: Option[PartitionSpec] = None
+    df.queryExecution.analyzed.foreach {
+      case _ @ LogicalRelation(
+        _ @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _) =>
+        res = Some(location.partitionSpec())
+      case _ =>
+    }
+    res
+  }
+
+  private def setFilePartitionInfo(metadata: Array[ZIndexFileInfoV2],
+      partitionSpec: Option[PartitionSpec]): Array[ZIndexFileInfoV2] = {
+    metadata.map(info => {
+      val partitionPath = partitionSpec.get
+        .partitions
+        .filter(pp => info.file.contains(pp.path.toUri.normalize.getPath.toString))
+        .head
+      info.copy(filePartitionPath = Some(partitionPath))
+    })
+  }
 }

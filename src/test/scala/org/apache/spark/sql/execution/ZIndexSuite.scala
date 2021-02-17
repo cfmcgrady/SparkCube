@@ -82,7 +82,20 @@ class ZIndexSuite extends SparkFunSuite{
 //    println(Integer.toBinaryString(-2))
     println("/tmp/aa/dd".split("/").last)
 
+    val aa = new AA {
+      override def f: Unit = println("bb")
+    }
+    aa.f
+    val a = Array(1, 2, 3, 4).reverse
+
+
 
   }
 
+}
+
+class AA {
+  def f = {
+    println("aa")
+  }
 }
