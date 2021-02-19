@@ -19,18 +19,37 @@ package com.alibaba.sparkcube
 
 import java.util.UUID
 
-import scala.collection.mutable.WrappedArray
-import org.apache.spark.sql.{Column, DataFrame, SparkSession}
-import org.apache.spark.sql.catalyst.expressions.HiveHash
+import scala.collection.mutable.HashMap
+
+import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.execution.{ArrayZIndexV2, ColumnMinMax, FileStatistics, ReplaceHadoopFsRelation, TableMetadata}
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionSpec}
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.execution.{ArrayZIndexV2, ColumnMinMax, FileStatistics, ReplaceHadoopFsRelation, TableMetadata, ZIndexFileInfoV2}
 
 object ZIndexUtil {
 
   val DEFAULT_Z_INDEX_CACHE_DIR_PREFIX = "/tmp/zindex/"
 
   val tableIndexPath = (tableName: String) => DEFAULT_Z_INDEX_CACHE_DIR_PREFIX + tableName
+
+  private val colToIndexColName = HashMap[String, String]()
+
+  private val indexColName = {
+    (colName: String) =>
+      colToIndexColName.getOrElseUpdate(
+        colName,
+        s"__${UUID.randomUUID().toString.replace("-", "")}__"
+      )
+  }
+  private val minColName = {
+    (colName: String) =>
+      s"__min_${indexColName(colName)}__"
+  }
+
+  private val maxColName = {
+    (colName: String) =>
+      s"__max_${indexColName(colName)}__"
+  }
 
   def createZIndex(spark: SparkSession,
                    inputFormat: String,
@@ -42,25 +61,19 @@ object ZIndexUtil {
 
     spark.udf.register("arrayZIndex", (vec: Seq[Int]) => ArrayZIndexV2.create(vec).indices)
 
-//    val df = spark.sql(s"select * from ${table}")
     val df = spark.read.format(inputFormat).load(inputPath)
     val table = inputPath.split("/").last
     val dataSchema = df.schema.map(_.name)
 
     val rowIdDF = df.selectExpr(
       Seq("*") ++
-        cols.map(c => s"DENSE_RANK() over(order by ${c}) - 1 as __${c}_id__"): _*
+        cols.map(c => s"DENSE_RANK() over(order by ${c}) - 1 as ${indexColName(c)}"): _*
     )
 
-//    val hashDF = rowIdDF
-//      .select(
-//        cols.map(c => new Column(HiveHash(Seq(col(c).expr))).as(s"__index_${c}__")): _*,
-//        col("*")
-//      )
     val indexDF = rowIdDF.selectExpr(
-        (Array("*") ++
+        (dataSchema ++
           Array(
-            s"arrayZIndex(array(${cols.map(c => s"__${c}_id__").mkString(",")})) as __zIndex__"
+            s"arrayZIndex(array(${cols.map(indexColName).mkString(",")})) as __zIndex__"
           )
         ): _*
       )
@@ -81,7 +94,7 @@ object ZIndexUtil {
 
     val minMaxExpr = cols.map {
       c =>
-        s"min(${c}) as __min_${c}__, max($c) as __max_${c}__"
+        s"min(${c}) as ${minColName(c)}, max($c) as ${maxColName(c)}"
     }.mkString(",")
 
     val stat = spark.sql(
@@ -94,8 +107,8 @@ object ZIndexUtil {
     var metadata = stat.collect()
       .map(r => {
         val minMaxInfo = cols.map(c => {
-          val min = r.get(r.fieldIndex(s"__min_${c}__"))
-          val max = r.get(r.fieldIndex(s"__max_${c}__"))
+          val min = r.get(r.fieldIndex(minColName(c)))
+          val max = r.get(r.fieldIndex(maxColName(c)))
           (c, ColumnMinMax(min, max))
         }).toMap
         FileStatistics(
@@ -108,24 +121,6 @@ object ZIndexUtil {
     if (partitionCols.isDefined) {
       metadata = setFilePartitionInfo(metadata, collectPartitionInfo(stat))
     }
-
-    // compute data length.
-    val dataLength = rowIdDF.selectExpr(
-      cols.map(c => s"max(__${c}_id__) as __max_id_${c}__"): _*
-    ).collect()
-      .headOption
-      .map(r => {
-        cols.map(c => {
-          r.getAs[Int](s"__max_id_${c}__")
-        }).max
-      }).get
-
-    println("----- metadata -----")
-    metadata.foreach(m => {
-      println(m.file)
-      println(m.minMax)
-    })
-    println("----- metadata -----")
 
     val zindexMetadata = TableMetadata(
       tableIndexPath(table),

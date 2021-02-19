@@ -289,6 +289,39 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
     }
   }
 
+  test("map column ") {
+    val format = "json"
+    withTempDir {
+      dir =>
+        val sparkSession = spark
+        import sparkSession.implicits._
+        (1 to 100).map(i => {
+          val info = if (i < 50) "a" else "b"
+          (i, Map("info" -> info, "name" -> s"name_${i}"))
+        }).toDF("col_1", "col_2")
+          .write
+          .format(format)
+          .mode("overwrite")
+          .save(dir.getCanonicalPath)
+
+        ZIndexUtil.createZIndex(
+          spark, format, dir.getCanonicalPath, Array("col_2['info']"),
+          fileNum = 5, format = format
+        )
+        val df = spark.read
+          .format(format)
+          .load(dir.getCanonicalPath)
+//          .filter("col_2['info'] == 'a'")
+//          .show()
+        testFilters(df,
+          Seq(
+            FilterTestInfo("col_2['info'] == 'a'", 2, 49)
+          )
+        )
+        Thread.sleep(Int.MaxValue)
+    }
+  }
+
   private def testFilters(input: DataFrame, info: Seq[FilterTestInfo]): Unit = {
     info.foreach(i => {
       val df = input.filter(i.condition)

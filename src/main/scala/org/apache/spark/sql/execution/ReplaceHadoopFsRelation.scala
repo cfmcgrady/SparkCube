@@ -1,16 +1,15 @@
 // scalastyle:off
 package org.apache.spark.sql.execution
 
-import com.alibaba.sparkcube.ZIndexFileInfo
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.{SparkSession, Strategy}
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BinaryComparison, BinaryOperator, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, HiveHash, LessThan, LessThanOrEqual, Literal, Or}
+import org.apache.spark.sql.{SparkSession}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual, Literal, Or}
 import org.apache.spark.sql.catalyst.plans.logical.{Filter, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.TypeUtils
-import org.apache.spark.sql.execution.datasources.{FileIndex, HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionDirectory, PartitionPath}
-import org.apache.spark.sql.types.{NumericType, StructType}
+import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionDirectory, PartitionPath}
+import org.apache.spark.sql.types.StructType
 
 case class ReplaceHadoopFsRelation() extends Rule[LogicalPlan] {
   override def apply(plan: LogicalPlan): LogicalPlan = {
@@ -57,7 +56,6 @@ class ZIndexInMemoryFileIndex(
     if (partitionSpec().partitionColumns.isEmpty) {
       val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
       val paths = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
-        //        val paths = ReplaceHadoopFsRelation.metadata
         .findTouchFileByExpression(filter)
         .map(i => {
           logInfo(s"input file: ${i}")
@@ -67,10 +65,6 @@ class ZIndexInMemoryFileIndex(
         .toSeq
       PartitionDirectory(InternalRow.empty, paths) :: Nil
     } else {
-//      val ps = partitionSpec()
-//      val pathToPartitionValue = ps.partitions.map(partitionPath => {
-//        (partitionPath.path, partitionPath.values)
-//      }).toMap
       val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
 
       val selectedPartitions = files.map(_.values).toSet
@@ -104,7 +98,6 @@ class ZIndexInMemoryFileIndex(
 
 object ReplaceHadoopFsRelation {
 
-//  var inCacheRelation = Map[String, String]()
   var relationMetadata = Map[String, TableMetadata]()
   var metadata: TableMetadata = _
 
@@ -141,33 +134,7 @@ case class FileStatistics(
  */
 case class TableMetadata(
     basePath: String,
-//    bitLength: Int,
-//    colIndices: Map[String, Int],
     fileMetadata: Array[FileStatistics]) {
-  def skipFiles(condition: Filter): Unit = {
-//    condition.map {
-//    }
-
-  }
-
-  def inCachedFiles(selectedPartitions: Seq[PartitionDirectory]): (Seq[PartitionDirectory], Array[ZIndexFileInfoV2]) = {
-
-//    var result = (Seq[PartitionDirectory], Array[ZIndexFileInfoV2])
-    var inCachedResult: Array[ZIndexFileInfoV2] = null
-    var nonInCachedResult: Seq[PartitionDirectory] = null
-
-    val cachedFiles = fileMetadata.map(_.file)
-    selectedPartitions.foreach {
-      case partitionDirectory: PartitionDirectory
-        if partitionDirectory.files.exists(fileStat => cachedFiles.contains(fileStat.getPath.getName)) =>
-
-        partitionDirectory.values
-//      case pd => nonInCachedResult += pd
-//        null
-    }
-
-    null
-  }
 
   // 遍历filter条件，获取命中的文件
   def findTouchFileByExpression(condition: Expression): Array[FileStatistics] = {
