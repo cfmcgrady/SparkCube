@@ -20,14 +20,17 @@ package com.alibaba.sparkcube
 import java.util.UUID
 
 import scala.collection.mutable.WrappedArray
-
 import org.apache.spark.sql.{Column, DataFrame, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.HiveHash
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionSpec}
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.execution.{ArrayZIndexV2, ReplaceHadoopFsRelation, ZIndexFileInfoV2, ZIndexMetadata}
+import org.apache.spark.sql.execution.{ArrayZIndexV2, ColumnMinMax, FileStatistics, ReplaceHadoopFsRelation, TableMetadata, ZIndexFileInfoV2}
 
 object ZIndexUtil {
+
+  val DEFAULT_Z_INDEX_CACHE_DIR_PREFIX = "/tmp/zindex/"
+
+  val tableIndexPath = (tableName: String) => DEFAULT_Z_INDEX_CACHE_DIR_PREFIX + tableName
 
   def createZIndex(spark: SparkSession,
                    inputFormat: String,
@@ -44,50 +47,61 @@ object ZIndexUtil {
     val table = inputPath.split("/").last
     val dataSchema = df.schema.map(_.name)
 
-    val hashDF = df
-      .select(
-        Seq(
-          col("*")) ++
-          cols.map(c => new Column(HiveHash(Seq(col(c).expr))).as(s"__index_${c}__")
-          ): _*
-      )
-    val indexDF = hashDF.selectExpr(
-        (dataSchema ++
+    val rowIdDF = df.selectExpr(
+      Seq("*") ++
+        cols.map(c => s"DENSE_RANK() over(order by ${c}) - 1 as __${c}_id__"): _*
+    )
+
+//    val hashDF = rowIdDF
+//      .select(
+//        cols.map(c => new Column(HiveHash(Seq(col(c).expr))).as(s"__index_${c}__")): _*,
+//        col("*")
+//      )
+    val indexDF = rowIdDF.selectExpr(
+        (Array("*") ++
           Array(
-            s"arrayZIndex(array(${cols.map(c => s"__index_${c}__").mkString(",")})) as __zIndex__"
+            s"arrayZIndex(array(${cols.map(c => s"__${c}_id__").mkString(",")})) as __zIndex__"
           )
         ): _*
       )
+
     val writeDF = indexDF
       .repartitionByRange(fileNum, col("__zIndex__"))
       .write
       .format(format)
       .mode("overwrite")
     partitionCols.foreach(cols => writeDF.partitionBy(cols: _*))
-    writeDF.save(s"/tmp/zindex/${table}")
+    writeDF.save(tableIndexPath(table))
 
     val tempView = s"__cache_${UUID.randomUUID().toString.replace("-", "")}"
     spark.read
       .format(format)
-      .load(s"/tmp/zindex/${table}")
+      .load(tableIndexPath(table))
       .createOrReplaceTempView(tempView)
+
+    val minMaxExpr = cols.map {
+      c =>
+        s"min(${c}) as __min_${c}__, max($c) as __max_${c}__"
+    }.mkString(",")
 
     val stat = spark.sql(
       s"""
-        |SELECT file, count(*) as numRecords, min(__zIndex__) as minZIndex, max(__zIndex__) as maxZIndex
+        |SELECT file, count(*) as numRecords, ${minMaxExpr}
         |FROM (
         | SELECT input_file_name() AS file, * FROM ${tempView}
         |) GROUP BY file
         |""".stripMargin)
-//    stat.show()
-    collectPartitionInfo(stat)
     var metadata = stat.collect()
       .map(r => {
-        ZIndexFileInfoV2(
+        val minMaxInfo = cols.map(c => {
+          val min = r.get(r.fieldIndex(s"__min_${c}__"))
+          val max = r.get(r.fieldIndex(s"__max_${c}__"))
+          (c, ColumnMinMax(min, max))
+        }).toMap
+        FileStatistics(
           r.getAs[String]("file"),
           r.getAs[Long]("numRecords"),
-          ArrayZIndexV2(r.getAs[WrappedArray[Long]]("minZIndex").map(_.toInt).toArray),
-          ArrayZIndexV2(r.getAs[WrappedArray[Long]]("maxZIndex").map(_.toInt).toArray)
+          minMaxInfo
         )
       })
 
@@ -96,28 +110,25 @@ object ZIndexUtil {
     }
 
     // compute data length.
-    val dataLength = hashDF.selectExpr(
-      cols.map(c => s"max(__index_${c}__) as max_hash_${c}"): _*
+    val dataLength = rowIdDF.selectExpr(
+      cols.map(c => s"max(__${c}_id__) as __max_id_${c}__"): _*
     ).collect()
       .headOption
       .map(r => {
         cols.map(c => {
-          r.getAs[Int](s"max_hash_${c}")
+          r.getAs[Int](s"__max_id_${c}__")
         }).max
       }).get
 
     println("----- metadata -----")
     metadata.foreach(m => {
       println(m.file)
-      println(m.minIndex.toBinaryString)
-      println(m.maxIndex.toBinaryString)
+      println(m.minMax)
     })
     println("----- metadata -----")
 
-    val zindexMetadata = ZIndexMetadata(
-      s"/tmp/zindex/${table}",
-      Integer.toBinaryString(dataLength - 1).length,
-      cols.zipWithIndex.toMap,
+    val zindexMetadata = TableMetadata(
+      tableIndexPath(table),
       metadata
     )
 
@@ -136,8 +147,8 @@ object ZIndexUtil {
     res
   }
 
-  private def setFilePartitionInfo(metadata: Array[ZIndexFileInfoV2],
-      partitionSpec: Option[PartitionSpec]): Array[ZIndexFileInfoV2] = {
+  private def setFilePartitionInfo(metadata: Array[FileStatistics],
+      partitionSpec: Option[PartitionSpec]): Array[FileStatistics] = {
     metadata.map(info => {
       val partitionPath = partitionSpec.get
         .partitions

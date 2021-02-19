@@ -88,6 +88,8 @@ class ZIndexSuite extends SparkFunSuite{
     aa.f
     val a = Array(1, 2, 3, 4).reverse
 
+    println(Integer.toUnsignedLong(-1))
+
 
 
   }

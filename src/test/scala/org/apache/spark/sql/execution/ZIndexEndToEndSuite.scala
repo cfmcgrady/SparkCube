@@ -17,34 +17,22 @@
 package org.apache.spark.sql.execution
 
 import java.io.File
+import java.util.Collections
+
+import scala.collection.JavaConverters._
+import scala.util.Random
 
 import com.alibaba.sparkcube.ZIndexUtil
 import org.apache.spark.sql.execution.metric.SQLMetricsTestUtils
-import org.apache.spark.{SparkConf, SparkFunSuite}
-import org.apache.spark.sql.{QueryTest, SparkSession}
+import org.apache.spark.sql.{DataFrame, QueryTest, Row, SparkSession}
 import org.apache.spark.util.Utils
 
-import scala.util.Random
-
-class ZIndexEndToEndSuite extends SparkFunSuite with SQLMetricsTestUtils {
-
-//  protected def withTempDir(f: File => Unit): Unit = {
-//    val dir = Utils.createTempDir().getCanonicalFile
-//    try f(dir) finally {
-//      Utils.deleteRecursively(dir)
-//    }
-//  }
+class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
 
   // 二维int例子
   test("int basic case") {
-    val spark = SparkSession
-      .builder()
-      .appName("test-spark")
-      .config("spark.sql.extensions", "org.apache.spark.sql.execution.PartitionExtensions")
-      .master("local[*]")
-      .getOrCreate()
 
-    val format = "parquet"
+    val format = "json"
 
     withTempDir {
       dir =>
@@ -66,22 +54,32 @@ class ZIndexEndToEndSuite extends SparkFunSuite with SQLMetricsTestUtils {
         val df = spark.read
           .format(format)
           .load(dir.getCanonicalPath)
-          .filter("col_1 == 2 or col_2 == 2")
-        df.explain(true)
-        df.show
-//        assert(df.inputFiles.size == 7)
-        assert(df.collect().size == 15)
-        Thread.sleep(Int.MaxValue)
+        testFilters(df,
+          Seq(
+            FilterTestInfo("col_1 == 2 or col_2 == 2", 7, 15),
+            FilterTestInfo("col_1 == 2 and col_2 == 2", 1, 1),
+            FilterTestInfo("col_1 == 2", 4, 8),
+            FilterTestInfo("col_2 == 2", 4, 8),
+            FilterTestInfo("2 == col_1", 4, 8),
+            FilterTestInfo("1 == 1", 16, 64),
+            FilterTestInfo("1 == 2", 16, 0),
+            FilterTestInfo("1 == 1 and col_1 == 2", 4, 8),
+            FilterTestInfo("1 == 2 and col_1 == 2", 4, 0),
+            FilterTestInfo("1 == 1 or col_1 == 2", 16, 64),
+            FilterTestInfo("1 == 2 or col_1 == 2", 4, 8),
+            FilterTestInfo("1 == 1 and 2 == 2", 16, 64),
+            FilterTestInfo("col_1 < 2", 4, 16),
+            FilterTestInfo("col_1 <= 2", 8, 24),
+            FilterTestInfo("col_1 > 5", 4, 16),
+            FilterTestInfo("col_1 >= 5", 8, 24),
+            FilterTestInfo("col_1 < 3", 8, 24),
+            FilterTestInfo("col_1 <= 3", 8, 32)
+          )
+        )
     }
   }
 
   test("int basic case 2") {
-    val spark = SparkSession
-      .builder()
-      .appName("test-spark")
-      .config("spark.sql.extensions", "org.apache.spark.sql.execution.PartitionExtensions")
-      .master("local[*]")
-      .getOrCreate()
 
     val format = "parquet"
 
@@ -103,20 +101,19 @@ class ZIndexEndToEndSuite extends SparkFunSuite with SQLMetricsTestUtils {
         val df = spark.read
           .format(format)
           .load(dir.getCanonicalPath)
-          .filter("col_1 == 2")
-        assert(df.inputFiles.size == 1)
-        assert(df.collect().size == 1)
+//          .filter("col_1 == 2")
+//        assert(df.inputFiles.size == 1)
+//        assert(df.collect().size == 1)
+        testFilters(df,
+          Seq(
+            FilterTestInfo("col_1 == 2", 1, 1, Some(Row(2, "x") :: Nil))
+          )
+        )
     }
   }
 
   // 三维int例子
   test("int basic case 3") {
-    val spark = SparkSession
-      .builder()
-      .appName("test-spark")
-      .config("spark.sql.extensions", "org.apache.spark.sql.execution.PartitionExtensions")
-      .master("local[*]")
-      .getOrCreate()
 
     val format = "parquet"
 
@@ -141,21 +138,15 @@ class ZIndexEndToEndSuite extends SparkFunSuite with SQLMetricsTestUtils {
         val df = spark.read
           .format(format)
           .load(dir.getCanonicalPath)
-          .filter("col_1 == 2 or col_2 == 2 or col_3 == 2")
-        df.explain(true)
-        df.show
-        assert(df.inputFiles.size == 48 - 9 - 2)
-        assert(df.collect().size == 169)
+        testFilters(df,
+          Seq(
+            FilterTestInfo("col_1 == 2 or col_2 == 2 or col_3 == 2", 48 - 9 - 2, 169)
+          )
+        )
     }
   }
 
   test("int basic case 4") {
-    val spark = SparkSession
-      .builder()
-      .appName("test-spark")
-      .config("spark.sql.extensions", "org.apache.spark.sql.execution.PartitionExtensions")
-      .master("local[*]")
-      .getOrCreate()
 
     val format = "parquet"
 
@@ -181,27 +172,35 @@ class ZIndexEndToEndSuite extends SparkFunSuite with SQLMetricsTestUtils {
           .format(format)
           .load(dir.getCanonicalPath)
           .filter("col_1 == -2 or col_2 == -2")
-        df.explain(true)
-        df.show
-        assert(df.inputFiles.size == 8)
-        assert(df.collect().size == 15)
+
+        testFilters(df,
+          Seq(
+            FilterTestInfo("col_1 == -2 or col_2 == -2", 7, 15)
+//            FilterTestInfo("col_1 == 2 and col_2 == 2", 1, 1),
+//            FilterTestInfo("col_1 == 2", 4, 8),
+//            FilterTestInfo("col_2 == 2", 4, 8),
+//            FilterTestInfo("2 == col_1", 4, 8),
+//            FilterTestInfo("1 == 1", 16, 64),
+//            FilterTestInfo("1 == 2", 16, 0),
+//            FilterTestInfo("1 == 1 and col_1 == 2", 4, 8),
+//            FilterTestInfo("1 == 2 and col_1 == 2", 4, 0),
+//            FilterTestInfo("1 == 1 or col_1 == 2", 16, 64),
+//            FilterTestInfo("1 == 2 or col_1 == 2", 4, 8),
+//            FilterTestInfo("1 == 1 and 2 == 2", 16, 64)
+          )
+        )
     }
   }
 
-  test("string basic case 2") {
-    val spark = SparkSession
-      .builder()
-      .appName("test-spark")
-      .config("spark.sql.extensions", "org.apache.spark.sql.execution.PartitionExtensions")
-      .master("local[*]")
-      .getOrCreate()
+  test("string basic case") {
 
     val format = "parquet"
 
     withTempDir {
       dir =>
+        val sparkSession = spark
         import org.apache.spark.sql.functions._
-        import spark.implicits._
+        import sparkSession.implicits._
         (Seq("abcdefG") ++
           (1 to 127).map(i => {
             val size = Random.nextInt(50)
@@ -223,29 +222,46 @@ class ZIndexEndToEndSuite extends SparkFunSuite with SQLMetricsTestUtils {
         val df = spark.read
           .format(format)
           .load(dir.getCanonicalPath)
-          .filter("col_1 == 'abcdefG'")
-        df.show
-//        assert(df.inputFiles.size == 1)
-        assert(df.collect().size == 1)
+        testFilters(df,
+          Seq(
+            FilterTestInfo("col_1 == 'abcdefG'", 1, 1)
+          )
+        )
+
+        ('a'.toInt until ('a'.toInt + 26)).map(_.toChar.toString)
+          .toDF("col_char")
+          .write
+          .format(format)
+          .mode("overwrite")
+          .save(dir.getCanonicalPath)
+
+        ZIndexUtil.createZIndex(
+          spark, format, dir.getCanonicalPath, Array("col_char"),
+          fileNum = 6, format = format
+        )
+        testFilters(
+          spark.read
+            .format(format)
+            .load(dir.getCanonicalPath),
+          Seq(
+            FilterTestInfo("col_char < 'e'", 1, 4,
+              Some(Row("a") :: Row("b") :: Row("c") :: Row("d") :: Nil))
+          )
+        )
     }
 
   }
 
   // 分区表
   test("partitioned table") {
-    val spark = SparkSession
-      .builder()
-      .appName("test-spark")
-      .config("spark.sql.extensions", "org.apache.spark.sql.execution.PartitionExtensions")
-      .master("local[*]")
-      .getOrCreate()
 
     val format = "parquet"
 
     withTempDir {
       dir =>
+        val sparkSession = spark
         import org.apache.spark.sql.functions._
-        import spark.implicits._
+        import sparkSession.implicits._
         val df2 = Seq((2, "y")).toDF("col_1", "col_2")
         spark.range(0, 1000)
           .selectExpr("id as col_1", "'x' as pid")
@@ -264,64 +280,95 @@ class ZIndexEndToEndSuite extends SparkFunSuite with SQLMetricsTestUtils {
         val df = spark.read
           .format(format)
           .load(dir.getCanonicalPath)
-          .filter("col_1 == 2")
-//        assert(df.inputFiles.size == 1)
-        df.show
-//        assert(df.collect().size == 1)
+        testFilters(df,
+          Seq(
+            FilterTestInfo("col_1 == 2", 2, 2),
+            FilterTestInfo("col_1 == 2 and pid == 'x'", 1, 1)
+          )
+        )
     }
   }
 
-  test("aa") {
-    val spark = SparkSession
+  private def testFilters(input: DataFrame, info: Seq[FilterTestInfo]): Unit = {
+    info.foreach(i => {
+      val df = input.filter(i.condition)
+      testNumFilesAndRowCount(df, i.numFiles, i.numRowCount, i.expectedRow)
+      val exchangeCondition = exchangeLeftRight(i.condition)
+      testNumFilesAndRowCount(
+        input.filter(exchangeCondition),
+        i.numFiles,
+        i.numRowCount,
+        i.expectedRow)
+    })
+  }
+
+  private def testNumFilesAndRowCount(df: DataFrame,
+                                      numFiles: Long,
+                                      numRowCount: Long,
+                                      expectedRow: Option[Seq[Row]] = None): Unit = {
+    val res = df.collect()
+    assert(res.length== numRowCount)
+    df.queryExecution.executedPlan.collectLeaves().foreach(l => {
+      l.metrics.foreach {
+        case (key, metric) if (key == "numFiles") =>
+          assert(metric.value == numFiles)
+        case _ =>
+      }
+    })
+    expectedRow.foreach(expected => {
+      checkAnswer(df, expected)
+    })
+  }
+
+  override def withTempDir(f: File => Unit): Unit = {
+    val dir = Utils.createTempDir().getCanonicalFile
+    try f(dir) finally {
+      // wait for all tasks to finish before deleting files
+      waitForTasksToFinish()
+      Utils.deleteRecursively(dir)
+      Utils.deleteRecursively(
+        new File(ZIndexUtil.tableIndexPath(dir.getName))
+      )
+    }
+  }
+
+  override protected def spark: SparkSession = {
+    SparkSession
       .builder()
       .appName("test-spark")
       .config("spark.sql.extensions", "org.apache.spark.sql.execution.PartitionExtensions")
       .master("local[*]")
       .getOrCreate()
-
-    val format = "json"
-
-    import org.apache.spark.sql.functions._
-    import spark.implicits._
-    val df2 = Seq((2, "y")).toDF("col_1", "col_2")
-    spark.range(0, 1000)
-      .selectExpr("id as col_1", "'x' as pid")
-      .union(df2)
-      .write
-      .format(format)
-      .partitionBy("pid")
-      .mode("overwrite")
-      .save("/tmp/aaa.json")
-
-    ZIndexUtil.createZIndex(
-      spark, format, "/tmp/aaa.json", Array("col_1"),
-      fileNum = 16, format = format, partitionCols = Some(Seq("pid"))
-    )
-
-    val df = spark.read
-      .format(format)
-      .load("/tmp/aaa.json")
-//      .filter("col_1 == 2 or (col_1 == 3 and col_1 == 4)")
-    df.collect()
-    df.queryExecution.executedPlan.collectLeaves().foreach(l => {
-      println(l.getClass.getCanonicalName)
-      l.metrics.foreach(println)
-      println("----nunfiles----")
-      l.metrics.get("numFiles").foreach(x => println(x.value))
-      println("----nunfiles----")
-    })
-
-//    val df2 = Seq(1, 2, 3).toDF("id").limit(2)
-//    df2.collect()
-//    val metrics2 = df2.queryExecution.executedPlan.collectLeaves().head.metrics
-//    df2.queryExecution.executedPlan
-//    assert(metrics2.contains("numOutputRows"))
-//    assert(metrics2("numOutputRows").value === 2)
-    this.getSparkPlanMetrics(df, 1, Set(0)).foreach(println)
-//    testSparkPlanMetrics()
-
-        Thread.sleep(Int.MaxValue)
   }
 
-  override protected def spark: SparkSession = SparkSession.active
+  case class FilterTestInfo(condition: String,
+                            numFiles: Long,
+                            numRowCount: Long,
+                            expectedRow: Option[Seq[Row]] = None)
+
+  //TODO: (fchen) 不带空格处理
+  private def exchangeLeftRight(condition: String): String = {
+    val opMap = Map(
+      ">" -> "<",
+      "<" -> ">",
+      "=" -> "=",
+      "==" -> "==",
+      ">=" -> "<=",
+      "<=" -> ">="
+    )
+    val arr = condition.split(" ")
+      .filter(_ != "")
+
+    val opIndex = arr.zipWithIndex.filter {
+      case (op, index) => opMap.keySet.contains(op)
+    }
+
+    val res = arr.toBuffer.asJava
+    opIndex.foreach {
+      case (op, index) =>
+        Collections.swap(res, index - 1, index + 1)
+        res.set(index, opMap(op))
+    }
+    res.asScala.toArray.mkString(" ")
+  }
 }

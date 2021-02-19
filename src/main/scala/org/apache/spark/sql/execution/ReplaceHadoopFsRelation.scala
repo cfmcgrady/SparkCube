@@ -5,107 +5,31 @@ import com.alibaba.sparkcube.ZIndexFileInfo
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.{SparkSession, Strategy}
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BinaryComparison, BinaryOperator, EqualNullSafe, EqualTo, Expression, HiveHash, Literal, Or}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BinaryComparison, BinaryOperator, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, HiveHash, LessThan, LessThanOrEqual, Literal, Or}
 import org.apache.spark.sql.catalyst.plans.logical.{Filter, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.execution.datasources.{FileIndex, HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionDirectory, PartitionPath}
-import org.apache.spark.sql.types.StructType
-
-//class replacehadoopfsrelation extends Strategy {
-//  override def apply(plan: LogicalPlan): Seq[SparkPlan] = {
-//    plan match {
-//      case hadoopfsrelation
-//    }
-//  }
-//}
+import org.apache.spark.sql.types.{NumericType, StructType}
 
 case class ReplaceHadoopFsRelation() extends Rule[LogicalPlan] {
   override def apply(plan: LogicalPlan): LogicalPlan = {
     plan resolveOperators {
-//      case logicalRelation @ LogicalRelation(relation: HadoopFsRelation, _, _, _)
-//        if ReplaceHadoopFsRelation.inCacheRelation.contains(
-//          s"${relation.fileFormat.toString.toLowerCase()}.`${relation.location.rootPaths.mkString(",").toLowerCase()}`") =>
-//
-//        val tableIdentifier = s"${relation.fileFormat.toString.toLowerCase()}.`${relation.location.rootPaths.mkString(",").toLowerCase()}`"
-//        val paths = Seq(new Path(
-//          ReplaceHadoopFsRelation.inCacheRelation(tableIdentifier)
-//        ))
-//        val newLocation = new InMemoryFileIndex(SparkSession.active, paths, Map.empty, Option(relation.schema))
-//        val newRelation = relation.copy(location = newLocation)(SparkSession.active)
-//        logicalRelation.copy(relation = newRelation)
-
-//      case logicalRelation @ LogicalRelation(relation: HadoopFsRelation, _, _, _) =>
-//        println("dddddebug")
-//        val y = s"${relation.fileFormat.toString.toLowerCase()}.`${relation.location.rootPaths.mkString(",").toLowerCase()}`"
-//        println(y)
-//        val x = ReplaceHadoopFsRelation.relationMetadata.keys.headOption.getOrElse("")
-//        println(x == y)
-//        ReplaceHadoopFsRelation.relationMetadata.foreach(println)
-//        logicalRelation
-//      case f @ Filter(cond,
-//      logicalRelation @ LogicalRelation(
-//      relation @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _)) =>
-//        println("ddddda")
-//        f
-
       case f @ Filter(cond,
       logicalRelation @ LogicalRelation(
       relation @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _))
         if ReplaceHadoopFsRelation.relationMetadata.contains(
           s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`") =>
-        println("aaaaa")
-        println(relation.fileFormat)
-        println(s"${relation.fileFormat}.`${location.rootPaths.mkString("")}`")
-//        val paths = ReplaceHadoopFsRelation.relationMetadata(
-//          s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`"
-//        )
-////        val paths = ReplaceHadoopFsRelation.metadata
-//          .findTouchFileByExpression(f.condition)
-//          .map(i => {
-//            logInfo(s"input file: ${i}")
-//            i
-//          })
-//          .map(i => new Path(i.file))
-//        val paths = location.inputFiles.map(f => new Path(f))
+
         val zIndexMetadata = ReplaceHadoopFsRelation.relationMetadata(
           s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`"
         )
-//        val newLocation2 = new InMemoryFileIndex(relation.sparkSession,
-//          Seq(new Path(zIndexMetadata.basePath)), Map.empty, Option(relation.schema)) {
-//          override def listFiles(partitionFilters:  Seq[Expression], dataFilters:  Seq[Expression]): Seq[PartitionDirectory] = {
-//            println("dddddddddddddddfff")
-//            val files = super.listFiles(partitionFilters, dataFilters)
-//            if (partitionSpec().partitionColumns.isEmpty) {
-//              val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.getName, f))).toMap
-//              val paths = ReplaceHadoopFsRelation.relationMetadata(
-//                s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`"
-//              )
-//                //        val paths = ReplaceHadoopFsRelation.metadata
-//                .findTouchFileByExpression(f.condition)
-//                .map(i => {
-//                  logInfo(s"input file: ${i}")
-//                  i
-//                })
-//                .map(zi => nameToFileStatus(zi.file))
-//                .toSeq
-////              PartitionDirectory(InternalRow.empty, paths) :: Nil
-//              throw new UnsupportedOperationException
-//            } else {
-//              throw new UnsupportedOperationException
-//            }
-//
-//          }
-//        }
-
         val newLocation = new ZIndexInMemoryFileIndex(
           s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`",
           relation.sparkSession, Seq(new Path(zIndexMetadata.basePath)), Map.empty, Option(relation.schema))
         val newRelation = relation.copy(location = newLocation)(relation.sparkSession)
         val newLogicalRelation = logicalRelation.copy(relation = newRelation)
         val newFilter = f.copy(cond, newLogicalRelation)
-        println("-------new filter------")
-        println(newFilter)
-        println(newLocation)
         newFilter
     }
   }
@@ -121,14 +45,20 @@ class ZIndexInMemoryFileIndex(
 
   override def listFiles(partitionFilters:  Seq[Expression], dataFilters:  Seq[Expression]): Seq[PartitionDirectory] = {
     val files = super.listFiles(partitionFilters, dataFilters)
+    logInfo(s"dataFilters size: ${dataFilters.size}.")
+    val filter = if (dataFilters.size > 1) {
+      dataFilters.reduce((l, r) => And(l, r))
+    } else if (dataFilters.size == 1) {
+      dataFilters.head
+    } else {
+      return files
+    }
+
     if (partitionSpec().partitionColumns.isEmpty) {
       val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
-      println("------name to file-----")
-      nameToFileStatus.foreach(println)
-      println("------name to file-----")
       val paths = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
         //        val paths = ReplaceHadoopFsRelation.metadata
-        .findTouchFileByExpression(dataFilters.head)
+        .findTouchFileByExpression(filter)
         .map(i => {
           logInfo(s"input file: ${i}")
           i
@@ -146,19 +76,13 @@ class ZIndexInMemoryFileIndex(
       val selectedPartitions = files.map(_.values).toSet
       val metadata = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
 
-      val selectedFiles = metadata.fileMetadta
+      val selectedFiles = metadata.fileMetadata
         .filter(fm => {
           fm.filePartitionPath.isDefined && selectedPartitions.contains(fm.filePartitionPath.get.values)
         })
 
-      val selectedMetadata = metadata.copy(fileMetadta = selectedFiles)
+      val selectedMetadata = metadata.copy(fileMetadata = selectedFiles)
 
-      logInfo(s"dataFilters size: ${dataFilters.size}.")
-      val filter = if (dataFilters.size > 1) {
-        dataFilters.reduce((l, r) => And(l, r))
-      } else {
-        dataFilters.head
-      }
       selectedMetadata.findTouchFileByExpression(filter)
         .map(i => {
           logInfo(s"input file: ${i}")
@@ -172,7 +96,6 @@ class ZIndexInMemoryFileIndex(
           case (Some(partitionPath), array) =>
             PartitionDirectory(partitionPath.values, array.map(_._2))
         }.toSeq
-//      throw new UnsupportedOperationException
     }
 
   }
@@ -182,8 +105,8 @@ class ZIndexInMemoryFileIndex(
 object ReplaceHadoopFsRelation {
 
 //  var inCacheRelation = Map[String, String]()
-  var relationMetadata = Map[String, ZIndexMetadata]()
-  var metadata: ZIndexMetadata = _
+  var relationMetadata = Map[String, TableMetadata]()
+  var metadata: TableMetadata = _
 
 }
 
@@ -203,18 +126,24 @@ case class ZIndexFileInfoV2(
   }
 }
 
+case class ColumnMinMax(min: Any, max: Any)
+
+case class FileStatistics(
+    file: String,
+    numRecords: Long,
+    minMax: Map[String, ColumnMinMax],
+    filePartitionPath: Option[PartitionPath] = None)
+
 /**
  * 分区表的情况，可能部分分区命中cache，而部分分区未能命中。
  *
- * @param bitLength
- * @param colIndices
- * @param fileMetadta
+ * @param fileMetadata
  */
-case class ZIndexMetadata(
+case class TableMetadata(
     basePath: String,
-    bitLength: Int,
-    colIndices: Map[String, Int],
-    fileMetadta: Array[ZIndexFileInfoV2]) {
+//    bitLength: Int,
+//    colIndices: Map[String, Int],
+    fileMetadata: Array[FileStatistics]) {
   def skipFiles(condition: Filter): Unit = {
 //    condition.map {
 //    }
@@ -227,7 +156,7 @@ case class ZIndexMetadata(
     var inCachedResult: Array[ZIndexFileInfoV2] = null
     var nonInCachedResult: Seq[PartitionDirectory] = null
 
-    val cachedFiles = fileMetadta.map(_.file)
+    val cachedFiles = fileMetadata.map(_.file)
     selectedPartitions.foreach {
       case partitionDirectory: PartitionDirectory
         if partitionDirectory.files.exists(fileStat => cachedFiles.contains(fileStat.getPath.getName)) =>
@@ -241,64 +170,129 @@ case class ZIndexMetadata(
   }
 
   // 遍历filter条件，获取命中的文件
-  def findTouchFileByExpression(condition: Expression): Array[ZIndexFileInfoV2] = {
-//    op match {
-//      case e @ EqualTo(att: AttributeReference, expr: _) =>
-//        att.name
-//
-//    }
-
-    def f(col: String, value: Int, prefix: Array[Int]): Boolean = {
-      val colIndex = colIndices(col)
-      (31 to 0 by -1).foreach(i => {
-        val mask = 1 << i
-        // 计算在prefix中的位置
-        val index = (31 - i) * colIndices.size + colIndex
-        if (index >= prefix.length) {
-          return true
-        }
-        (value & mask) match {
-          case 0 if (prefix(index) != 0) => return false
-          case res if (res !=0 && prefix(index) != 1) => return false
-          case _ => // do nothing
-        }
-//        if ((value & mask) != 0) {
-//          1
-//        } else {
-//          0
-//        }
-      })
-      true
-    }
+  def findTouchFileByExpression(condition: Expression): Array[FileStatistics] = {
 
     condition match {
-      case e @ EqualTo(left: AttributeReference, right: Literal) =>
-        val l = lowerBound(left.name, HiveHash(Seq(right)).eval())
-        val h = upperBound(left.name, HiveHash(Seq(right)).eval())
-        fileMetadta.filter {
-          case file =>
-            f(left.name, HiveHash(Seq(right)).eval(), file.zIndexPrefix) &&
-            file.minIndex <= h && file.maxIndex >= l
+      case _ @ EqualTo(left: AttributeReference, right: Literal) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(left.name)
+              .map {
+                case ColumnMinMax(min, max) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+                  ordering.lteq(Literal(min).value, right.value) && ordering.gteq(Literal(max).value, right.value)
+              }.getOrElse(true)
         }
-      case e @ EqualTo(left: Literal, right: AttributeReference) =>
-        val l = lowerBound(right.name, HiveHash(Seq(left)).eval())
-        val h = upperBound(right.name, HiveHash(Seq(left)).eval())
-//        fileMetadta.filter {
-//          case f =>
-//            // 包含下边界
-//            (f.maxIndex >= l && f.minIndex <= l) ||
-//              // 包含上边界
-//              (f.maxIndex >= h && f.minIndex <= h)
-//        }
-        fileMetadta.filter {
-          case file =>
-            f(right.name, HiveHash(Seq(left)).eval(), file.zIndexPrefix) &&
-            file.minIndex <= h && file.maxIndex >= l
+
+      case _ @ EqualTo(left: Literal, right: AttributeReference) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(right.name)
+              .map {
+                case ColumnMinMax(min, max) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
+                  ordering.lteq(Literal(min).value, left.value) && ordering.gteq(Literal(max).value, left.value)
+              }.getOrElse(true)
         }
+      case _ @ LessThan(left: AttributeReference, right: Literal) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(left.name)
+              .map {
+                case ColumnMinMax(min, _) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+                  ordering.lt(Literal(min).value, right.value)
+              }.getOrElse(true)
+        }
+      case _ @ LessThan(left: Literal, right: AttributeReference) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(right.name)
+              .map {
+                case ColumnMinMax(_, max) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
+                  ordering.lt(left.value, Literal(max).value)
+              }.getOrElse(true)
+        }
+      case _ @ LessThanOrEqual(left: AttributeReference, right: Literal) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(left.name)
+              .map {
+                case ColumnMinMax(min, _) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+                  ordering.lteq(Literal(min).value, right.value)
+              }.getOrElse(true)
+        }
+
+      case _ @ LessThanOrEqual(left: Literal, right: AttributeReference) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(right.name)
+              .map {
+                case ColumnMinMax(_, max) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
+                  ordering.lteq(left.value, Literal(max).value)
+              }.getOrElse(true)
+        }
+
+      case _ @ GreaterThan(left: AttributeReference, right: Literal) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(left.name)
+              .map {
+                case ColumnMinMax(_, max) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+                  ordering.gt(Literal(max).value, right.value)
+              }.getOrElse(true)
+        }
+
+      case _ @ GreaterThan(left: Literal, right: AttributeReference) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(right.name)
+              .map {
+                case ColumnMinMax(min, _) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
+                  ordering.gt(left.value, Literal(min).value)
+              }.getOrElse(true)
+        }
+
+      case _ @ GreaterThanOrEqual(left: AttributeReference, right: Literal) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(left.name)
+              .map {
+                case ColumnMinMax(_, max) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+                  ordering.gteq(Literal(max).value, right.value)
+              }.getOrElse(true)
+        }
+      case _ @ GreaterThanOrEqual(left: Literal, right: AttributeReference) =>
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(right.name)
+              .map {
+                case ColumnMinMax(min, _) =>
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
+                  ordering.gteq(left.value, Literal(min).value)
+              }.getOrElse(true)
+        }
+
       case e @ EqualNullSafe(left: AttributeReference, right: Literal) =>
-        fileMetadta
+        fileMetadata
       case e @ EqualNullSafe(left: Literal, right: AttributeReference) =>
-        fileMetadta
+        fileMetadata
       case a: And =>
         val resLeft = findTouchFileByExpression(a.left)
         val resRight = findTouchFileByExpression(a.right)
@@ -310,50 +304,11 @@ case class ZIndexMetadata(
         // 并集
         resLeft.union(resRight).distinct
       case _ =>
-        fileMetadta
+        fileMetadata
     }
 
   }
 
-  def upperBound(col: String, value: Int): ArrayZIndexV2 = {
-    val colIndex = colIndices(col)
-    ArrayZIndexV2.create(
-      Array.tabulate(colIndices.size) {
-        case i if i == colIndex => value
-        case _ => (1 << bitLength) - 1
-      }
-    )
-  }
-
-  def lowerBound(col: String, value: Int): ArrayZIndexV2 = {
-    val colIndex = colIndices(col)
-    ArrayZIndexV2.create(
-      Array.tabulate(colIndices.size) {
-        case i if i == colIndex => value
-        case _ => 0
-      }
-    )
-  }
-
-  private def traverse[T](condition: Expression,
-                          comparisonOp: (AttributeReference, Literal, BinaryComparison) => T,
-                          binaryOperatorOp: (T, T, BinaryOperator) => T): T = {
-    condition match {
-      case e @ EqualTo(left: AttributeReference, right: Literal) =>
-        comparisonOp(left, right, e)
-      case e @ EqualTo(left: Literal, right: AttributeReference) =>
-        comparisonOp(right, left, e)
-      case e @ EqualNullSafe(left: AttributeReference, right: Literal) =>
-        comparisonOp(left, right, e)
-      case e @ EqualNullSafe(left: Literal, right: AttributeReference) =>
-        comparisonOp(right, left, e)
-      case a: And =>
-        val resLeft = traverse(a.left, comparisonOp, binaryOperatorOp)
-        val resRight = traverse(a.right, comparisonOp, binaryOperatorOp)
-        binaryOperatorOp(resLeft, resRight, a)
-      //      case _ =>
-    }
-  }
 }
 
 // 实现两种类型
