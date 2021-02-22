@@ -20,15 +20,15 @@ package com.alibaba.sparkcube
 import java.util.UUID
 
 import scala.collection.mutable.HashMap
-
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.execution.{ArrayZIndexV2, ColumnMinMax, FileStatistics, ReplaceHadoopFsRelation, TableMetadata}
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionSpec}
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.IntegerType
 
 object ZIndexUtil {
 
-  val DEFAULT_Z_INDEX_CACHE_DIR_PREFIX = "/tmp/zindex/"
+  val DEFAULT_Z_INDEX_CACHE_DIR_PREFIX = "tmp/zindex/"
 
   val tableIndexPath = (tableName: String) => DEFAULT_Z_INDEX_CACHE_DIR_PREFIX + tableName
 
@@ -65,10 +65,15 @@ object ZIndexUtil {
     val table = inputPath.split("/").last
     val dataSchema = df.schema.map(_.name)
 
-    val rowIdDF = df.selectExpr(
-      Seq("*") ++
-        cols.map(c => s"DENSE_RANK() over(order by ${c}) - 1 as ${indexColName(c)}"): _*
-    )
+//    val rowIdDF = df.repartition(1000).selectExpr(
+//      Seq("*") ++
+//        cols.map(c => s"DENSE_RANK() over(order by ${c}) - 1 as ${indexColName(c)}"): _*
+//    )
+
+    var rowIdDF: DataFrame = df
+    cols.foreach(c => {
+      rowIdDF = generateGlobalRankId(rowIdDF, c, indexColName(c))
+    })
 
     val indexDF = rowIdDF.selectExpr(
         (dataSchema ++
@@ -80,6 +85,7 @@ object ZIndexUtil {
 
     val writeDF = indexDF
       .repartitionByRange(fileNum, col("__zIndex__"))
+      .selectExpr(dataSchema: _*)
       .write
       .format(format)
       .mode("overwrite")
@@ -127,8 +133,69 @@ object ZIndexUtil {
       metadata
     )
 
+    val path = getTablePath(df).toLowerCase()
     ReplaceHadoopFsRelation.relationMetadata +=
-      (s"${inputFormat.toLowerCase()}.`file:${inputPath.toLowerCase()}`" -> zindexMetadata)
+      (s"${inputFormat.toLowerCase()}.`${path}`" -> zindexMetadata)
+  }
+
+  /**
+   * reference: https://medium.com/swlh/computing-global-rank-of-a-row-in-a-dataframe-with-spark-sql-34f6cc650ae5
+   * @param df
+   * @param colName
+   * @param rankColName
+   * @return
+   */
+  def generateGlobalRankId(df: DataFrame, colName: String, rankColName: String): DataFrame = {
+
+    val inputSchema = df.schema.map(_.name)
+    val spark = df.sparkSession
+    import org.apache.spark.sql.functions._
+    import spark.implicits._
+    val partDF = df
+      .orderBy(colName) // ==> 通过range partition来实现的
+      .withColumn("partitionId", spark_partition_id())
+
+//    partDF.createOrReplaceTempView("aaa")
+//    spark.sql("select distinct(partitionId) as pid from aaa").show()
+
+    import org.apache.spark.sql.expressions.Window
+    val w = Window.partitionBy("partitionId").orderBy(colName)
+
+//    val rankDF = partDF.withColumn("local_rank", dense_rank().over(w))
+    val rankDF = partDF.withColumn("local_rank", row_number().over(w))
+      .withColumn("rand_id", rand())
+      .repartition(1000, col("rand_id"))
+      .persist()
+
+    rankDF.count
+
+    val tempDf =
+      rankDF.groupBy("partitionId").agg(max("local_rank").alias("max_rank"))
+
+    val w2 = Window.orderBy("partitionId").rowsBetween(Window.unboundedPreceding, Window.currentRow)
+
+    val statsDf = tempDf.withColumn("cum_rank", sum("max_rank").over(w2))
+
+    val joinDF = statsDf.alias("l")
+      .join(
+        statsDf.alias("r"), $"l.partitionId" === $"r.partitionId" +1, "left"
+      ).select(
+        col("l.partitionId"),
+        coalesce(col("r.cum_rank"), lit(0)).alias("sum_factor")
+    )
+
+    // todo: (fchen) 转为long类型
+    val finalDF = rankDF.join(
+      broadcast(joinDF), Seq("partitionId"),"inner")
+      .withColumn(rankColName, ($"local_rank" + $"sum_factor" - 1).cast(IntegerType))
+
+    finalDF.selectExpr((rankColName :: Nil ++ inputSchema): _*)
+    //    finalDF
+
+    //        .filter("sum_factor")
+    //      .show
+
+
   }
 
   private def collectPartitionInfo(df: DataFrame): Option[PartitionSpec] = {
@@ -151,5 +218,14 @@ object ZIndexUtil {
         .head
       info.copy(filePartitionPath = Some(partitionPath))
     })
+  }
+
+  private def getTablePath(df: DataFrame): String = {
+    df.queryExecution.analyzed.map {
+      case _ @ LogicalRelation(
+      _ @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _) =>
+        location.rootPaths.mkString("")
+      case _ => ""
+    }.mkString("")
   }
 }

@@ -89,6 +89,7 @@ class ZIndexSuite extends SparkFunSuite{
     val a = Array(1, 2, 3, 4).reverse
 
     println(Integer.toUnsignedLong(-1))
+    println(Long.MaxValue)
 
 
 

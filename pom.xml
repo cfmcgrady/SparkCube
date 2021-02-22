@@ -116,11 +116,11 @@
             <version>${spark.version}</version>
             <scope>${spark.scope}</scope>
         </dependency>
-        <dependency>
-            <groupId>cloud.fchen</groupId>
-            <artifactId>spark-extensions-core_2.11</artifactId>
-            <version>1.0.1-s2.4.3-SNAPSHOT</version>
-        </dependency>
+<!--        <dependency>-->
+<!--            <groupId>cloud.fchen</groupId>-->
+<!--            <artifactId>spark-extensions-core_2.11</artifactId>-->
+<!--            <version>1.0.1-s2.4.3-SNAPSHOT</version>-->
+<!--        </dependency>-->
 
         <dependency> <!-- Spark dependency -->
             <groupId>org.apache.spark</groupId>
@@ -149,7 +149,7 @@
         <jetty.version>9.4.27.v20200227</jetty.version>
 <!--        <jetty.version>9.3.24.v20180605</jetty.version>-->
 <!--        <spark.version>2.4.3</spark.version>-->
-        <spark.version>2.4.7</spark.version>
+        <spark.version>2.4.3</spark.version>
         <spark.scope>provided</spark.scope>
         <scala.binary.version>2.11</scala.binary.version>
     </properties>
@@ -350,6 +350,7 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
                             <keepDependenciesWithProvidedScope>
                                 false
                             </keepDependenciesWithProvidedScope>

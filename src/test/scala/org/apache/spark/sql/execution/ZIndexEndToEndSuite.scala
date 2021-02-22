@@ -21,8 +21,8 @@ import java.util.Collections
 
 import scala.collection.JavaConverters._
 import scala.util.Random
-
 import com.alibaba.sparkcube.ZIndexUtil
+import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation}
 import org.apache.spark.sql.execution.metric.SQLMetricsTestUtils
 import org.apache.spark.sql.{DataFrame, QueryTest, Row, SparkSession}
 import org.apache.spark.util.Utils
@@ -110,6 +110,7 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
           )
         )
     }
+    Thread.sleep(Int.MaxValue)
   }
 
   // 三维int例子
@@ -403,5 +404,86 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
         res.set(index, opMap(op))
     }
     res.asScala.toArray.mkString(" ")
+  }
+
+  test("aa") {
+//    spark.range(1, 1000)
+////      .sort("id")
+//      .write
+//      .format("json")
+//      .mode("overwrite")
+//      .save("/tmp/aaa")
+    val f = spark.read
+      .format("json")
+      .load("/tmp/aaa")
+//    f.queryExecution.analyzed.foreach {
+//      case logicalRelation @ LogicalRelation(
+//        relation @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _) =>
+//        println(location.rootPaths.mkString(""))
+//      case _ =>
+//    }
+//      .sort("id")
+//      .write
+//      .format("json")
+//      .mode("overwrite")
+//      .save("/tmp/bbb")
+//    spark.range(0 , 1000)
+      .selectExpr("id", "cast(rand() * 1000 as int ) % 3 as col_1")
+      .createOrReplaceTempView("aaa")
+
+    spark.sql("select col_1, id, DENSE_RANK() over(partition by col_1 order by id) as nid from aaa")
+        .show(200)
+    Thread.sleep(Int.MaxValue)
+
+//    val sparkSession = spark
+//    import sparkSession.implicits._
+//    val df = (0 to 10000).toDF("id")
+//    val df2 = Seq("a", "b", "b", "c", "f", "c").toDF("id")
+//    generateGlobalRankId(df2, "id", "id_rank")
+  }
+
+  def generateGlobalRankId(df: DataFrame, colName: String, rankColName: String): DataFrame = {
+
+    val inputSchema = df.schema.map(_.name)
+    val spark = df.sparkSession
+    import org.apache.spark.sql.functions._
+    import spark.implicits._
+    val partDF = df.repartition(1000)
+      .orderBy(colName)
+      .withColumn("partitionId", spark_partition_id())
+
+    import org.apache.spark.sql.expressions.Window
+    val w = Window.partitionBy("partitionId").orderBy(colName)
+
+    val rankDF = partDF.withColumn("local_rank", dense_rank().over(w))
+
+    val tempDf =
+      rankDF.groupBy("partitionId").agg(max("local_rank").alias("max_rank"))
+
+    val w2 = Window.orderBy("partitionId").rowsBetween(Window.unboundedPreceding, Window.currentRow)
+
+    val statsDf = tempDf.withColumn("cum_rank", sum("max_rank").over(w2))
+
+    val joinDF = statsDf.alias("l")
+      .join(
+        statsDf.alias("r"), $"l.partitionId" === $"r.partitionId" +1, "left")
+      .select(
+        col("l.partitionId"),
+        coalesce(col("r.cum_rank"), lit(0)).alias("sum_factor"))
+
+
+    val finalDF = rankDF.join(
+      broadcast(joinDF), Seq("partitionId"),"inner")
+      .withColumn(rankColName, $"local_rank" + $"sum_factor" - 1)
+
+    finalDF.selectExpr((rankColName :: Nil ++ inputSchema): _*)
+      .printSchema()
+    finalDF.selectExpr((rankColName :: Nil ++ inputSchema): _*)
+//    finalDF
+
+//        .filter("sum_factor")
+//      .show
+
+
   }
 }

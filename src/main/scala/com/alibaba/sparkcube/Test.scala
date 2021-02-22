@@ -13,7 +13,8 @@ object Test {
   val dataLength = 8
   def main(args: Array[String]): Unit = {
 //    zIndex(length, Seq(0, 2))
-    test()
+//    test()
+    testRepartitionByRange
     System.exit(0)
 //    println(Integer.toBinaryString(20))
 //    println(Integer.toBinaryString(9))
@@ -242,6 +243,8 @@ object Test {
       Array(1, 3)
     ).toDF("id")
       .repartitionByRange(2, col("id"))
+
+    df.explain(true)
 
     df.rdd.mapPartitionsWithIndex {
       case (index, row) =>
