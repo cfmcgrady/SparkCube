@@ -1,10 +1,11 @@
 // scalastyle:off
 package org.apache.spark.sql.execution
 
+import com.alibaba.sparkcube.{SchemaUtils, ZIndexUtil}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.{SparkSession}
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual, Literal, Or}
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualNullSafe, EqualTo, Expression, GetMapValue, GetStructField, GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual, Literal, Or}
 import org.apache.spark.sql.catalyst.plans.logical.{Filter, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.TypeUtils
@@ -53,6 +54,7 @@ class ZIndexInMemoryFileIndex(
       return files
     }
 
+    println(s"filter----${filter}")
     if (partitionSpec().partitionColumns.isEmpty) {
       val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
       val paths = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
@@ -139,27 +141,46 @@ case class TableMetadata(
   // 遍历filter条件，获取命中的文件
   def findTouchFileByExpression(condition: Expression): Array[FileStatistics] = {
 
+    def equalTo(left: String, right: Literal): Unit = {
+//      fileMetadata.filter {
+//        case fileStatistics =>
+//          fileStatistics.minMax
+//            .get(left)
+//            .map {
+//              case ColumnMinMax(min, max) =>
+//                val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+//                ordering.lteq(Literal(min).value, right.value) && ordering.gteq(Literal(max).value, right.value)
+//            }.getOrElse(true)
+//      }
+    }
+
     condition match {
-      case _ @ EqualTo(left: AttributeReference, right: Literal) =>
+      case equalTo @ EqualTo(_: AttributeReference |
+                             _: GetStructField |
+                             _: GetMapValue, right: Literal) =>
+        val colName = ZIndexUtil.extractRecursively(equalTo.left).mkString(".")
         fileMetadata.filter {
           case fileStatistics =>
             fileStatistics.minMax
-              .get(left.name)
+              .get(colName)
               .map {
                 case ColumnMinMax(min, max) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(equalTo.left.dataType)
                   ordering.lteq(Literal(min).value, right.value) && ordering.gteq(Literal(max).value, right.value)
               }.getOrElse(true)
         }
 
-      case _ @ EqualTo(left: Literal, right: AttributeReference) =>
+      case equalTo @ EqualTo(left: Literal, _: AttributeReference |
+                                            _: GetStructField |
+                                            _: GetMapValue) =>
+        val colName = ZIndexUtil.extractRecursively(equalTo.right).mkString(".")
         fileMetadata.filter {
           case fileStatistics =>
             fileStatistics.minMax
-              .get(right.name)
+              .get(colName)
               .map {
                 case ColumnMinMax(min, max) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
+                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(equalTo.right.dataType)
                   ordering.lteq(Literal(min).value, left.value) && ordering.gteq(Literal(max).value, left.value)
               }.getOrElse(true)
         }

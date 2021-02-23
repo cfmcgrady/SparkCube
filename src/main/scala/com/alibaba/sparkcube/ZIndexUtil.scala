@@ -19,6 +19,10 @@ package com.alibaba.sparkcube
 
 import java.util.UUID
 
+import org.apache.spark.internal.Logging
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, ExtractValue, GetMapValue, GetStructField, Literal}
+import org.apache.spark.sql.catalyst.plans.logical.Project
+
 import scala.collection.mutable.HashMap
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.execution.{ArrayZIndexV2, ColumnMinMax, FileStatistics, ReplaceHadoopFsRelation, TableMetadata}
@@ -26,7 +30,7 @@ import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFil
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.IntegerType
 
-object ZIndexUtil {
+object ZIndexUtil extends Logging {
 
   val DEFAULT_Z_INDEX_CACHE_DIR_PREFIX = "tmp/zindex/"
 
@@ -93,10 +97,10 @@ object ZIndexUtil {
     writeDF.save(tableIndexPath(table))
 
     val tempView = s"__cache_${UUID.randomUUID().toString.replace("-", "")}"
-    spark.read
+    val tempDF = spark.read
       .format(format)
       .load(tableIndexPath(table))
-      .createOrReplaceTempView(tempView)
+    tempDF.createOrReplaceTempView(tempView)
 
     val minMaxExpr = cols.map {
       c =>
@@ -110,12 +114,13 @@ object ZIndexUtil {
         | SELECT input_file_name() AS file, * FROM ${tempView}
         |) GROUP BY file
         |""".stripMargin)
+
     var metadata = stat.collect()
       .map(r => {
         val minMaxInfo = cols.map(c => {
           val min = r.get(r.fieldIndex(minColName(c)))
           val max = r.get(r.fieldIndex(maxColName(c)))
-          (c, ColumnMinMax(min, max))
+          (getNormalizeColumnName(tempDF, c), ColumnMinMax(min, max))
         }).toMap
         FileStatistics(
           r.getAs[String]("file"),
@@ -140,6 +145,7 @@ object ZIndexUtil {
 
   /**
    * reference: https://medium.com/swlh/computing-global-rank-of-a-row-in-a-dataframe-with-spark-sql-34f6cc650ae5
+   *
    * @param df
    * @param colName
    * @param rankColName
@@ -147,10 +153,19 @@ object ZIndexUtil {
    */
   def generateGlobalRankId(df: DataFrame, colName: String, rankColName: String): DataFrame = {
 
+    // if the input column is a nested column, we should normalize the input column name.
+    if (isNestedColumn(df, colName)) {
+      val newColName = s"__col_${colName.hashCode.toString.replaceAll("-", "")}__"
+      val newDF = df.selectExpr("*", s"$colName as $newColName")
+      return generateGlobalRankId(newDF, newColName, rankColName)
+        .selectExpr((Seq(rankColName) ++ df.schema.map(_.name)): _*)
+    }
+
     val inputSchema = df.schema.map(_.name)
     val spark = df.sparkSession
     import org.apache.spark.sql.functions._
     import spark.implicits._
+
     val partDF = df
       .orderBy(colName) // ==> 通过range partition来实现的
       .withColumn("partitionId", spark_partition_id())
@@ -190,12 +205,40 @@ object ZIndexUtil {
       .withColumn(rankColName, ($"local_rank" + $"sum_factor" - 1).cast(IntegerType))
 
     finalDF.selectExpr((rankColName :: Nil ++ inputSchema): _*)
-    //    finalDF
+  }
 
-    //        .filter("sum_factor")
-    //      .show
+  def extractRecursively(expr: Expression): Seq[String] = expr match {
+    case attr: Attribute => Seq(attr.name)
 
+    case Alias(c, _) => extractRecursively(c)
 
+    case GetStructField(c, _, Some(name)) => extractRecursively(c) :+ name
+
+    case GetMapValue(left, lit: Literal) => extractRecursively(left) :+ lit.eval().toString
+
+//    case _: ExtractValue =>
+//      throw new RuntimeException("extract nested fields is only supported for StructType.")
+    case other =>
+      throw new RuntimeException(
+        s"Found unsupported expression '$other' while parsing target column name parts")
+  }
+
+  private def getNormalizeColumnName(df: DataFrame, colName: String): String = {
+    df.selectExpr(colName)
+      .queryExecution
+      .analyzed
+      .collect {case proj: Project => proj}
+      .headOption
+      .map(proj => {
+        extractRecursively(proj.projectList.head).mkString(".")
+      })
+      .getOrElse {
+        throw new RuntimeException(s"can't normalize the ${colName}")
+      }
+  }
+
+  private def isNestedColumn(df: DataFrame, colName: String): Boolean = {
+    !df.schema.fields.map(_.name).contains(colName)
   }
 
   private def collectPartitionInfo(df: DataFrame): Option[PartitionSpec] = {

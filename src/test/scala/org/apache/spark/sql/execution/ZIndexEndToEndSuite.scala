@@ -21,8 +21,9 @@ import java.util.Collections
 
 import scala.collection.JavaConverters._
 import scala.util.Random
-import com.alibaba.sparkcube.ZIndexUtil
-import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation}
+import com.alibaba.sparkcube.{SchemaUtils, ZIndexUtil}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, ExtractValue, GetStructField}
+import org.apache.spark.sql.catalyst.plans.logical.Project
 import org.apache.spark.sql.execution.metric.SQLMetricsTestUtils
 import org.apache.spark.sql.{DataFrame, QueryTest, Row, SparkSession}
 import org.apache.spark.util.Utils
@@ -110,7 +111,6 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
           )
         )
     }
-    Thread.sleep(Int.MaxValue)
   }
 
   // 三维int例子
@@ -316,10 +316,9 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
 //          .show()
         testFilters(df,
           Seq(
-            FilterTestInfo("col_2['info'] == 'a'", 2, 49)
+            FilterTestInfo("col_2['info'] == 'a'", 3, 49)
           )
         )
-        Thread.sleep(Int.MaxValue)
     }
   }
 
@@ -413,9 +412,9 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
 //      .format("json")
 //      .mode("overwrite")
 //      .save("/tmp/aaa")
-    val f = spark.read
-      .format("json")
-      .load("/tmp/aaa")
+//    val f = spark.read
+//      .format("json")
+//      .load("/tmp/aaa")
 //    f.queryExecution.analyzed.foreach {
 //      case logicalRelation @ LogicalRelation(
 //        relation @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _) =>
@@ -428,12 +427,69 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
 //      .mode("overwrite")
 //      .save("/tmp/bbb")
 //    spark.range(0 , 1000)
-      .selectExpr("id", "cast(rand() * 1000 as int ) % 3 as col_1")
-      .createOrReplaceTempView("aaa")
+//      .selectExpr("id", "cast(rand() * 1000 as int ) % 3 as col_1")
+//      .createOrReplaceTempView("aaa")
+//
+//    spark.sql("select col_1, id, DENSE_RANK() over(partition by col_1 order by id) as nid from aaa")
+//        .show(200)
 
-    spark.sql("select col_1, id, DENSE_RANK() over(partition by col_1 order by id) as nid from aaa")
-        .show(200)
-    Thread.sleep(Int.MaxValue)
+    val sparkSession = spark
+    import sparkSession.implicits._
+
+    val df = (1 to 100).map(i => {
+      val info = if (i < 50) "a" else "b"
+      (i, Map("info" -> info, "name" -> s"name_${i}"))
+    }).toDF("col_1", "col_2")
+
+    df.write
+
+//    df.selectExpr("col_2['info']").collect()
+//      .foreach(r => {
+//        val x = SchemaUtils.explodeNestedFieldNames(r.schema)
+//        println(x.size)
+//        println(x.mkString("."))
+//        r.schema.fields.foreach(i => {
+//          println(i.getClass.getCanonicalName)
+//          println(i.name)
+//        })
+//      })
+//    df.explain(true)
+//
+//    import org.apache.spark.sql.functions._
+//
+//    println(col("col_2['info']"))
+//
+//
+//    def extractRecursively(expr: Expression): Seq[String] = expr match {
+//      case attr: Attribute => Seq(attr.name)
+//
+//      case Alias(c, _) => extractRecursively(c)
+//
+//      case GetStructField(c, _, Some(name)) => extractRecursively(c) :+ name
+//
+//      case _: ExtractValue =>
+//        fail("Updating nested fields is only supported for StructType.")
+//
+//      case other =>
+//        fail(s"Found unsupported expression '$other' while parsing target column name parts")
+//    }
+//
+//    println(extractRecursively(col("col_2['info']").expr).mkString(","))
+//
+//
+//    df.selectExpr("col_2['info']")
+//      .queryExecution
+//      .analyzed
+//      .foreach(l => {
+//        if (l.isInstanceOf[Project]) {
+//          l.asInstanceOf[Project].projectList.foreach(println)
+//
+//        }
+////        println(l.getClass.getCanonicalName)
+//      })
+//
+//    println(extractRecursively(col("col_2['info']").expr).mkString(","))
+
 
 //    val sparkSession = spark
 //    import sparkSession.implicits._
