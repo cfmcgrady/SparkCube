@@ -5,7 +5,7 @@ import com.alibaba.sparkcube.{SchemaUtils, ZIndexUtil}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualNullSafe, EqualTo, Expression, GetMapValue, GetStructField, GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual, Literal, Or}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualNullSafe, EqualTo, Expression, GetMapValue, GetStructField, GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual, Literal, NonNullLiteral, Or}
 import org.apache.spark.sql.catalyst.plans.logical.{Filter, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.TypeUtils
@@ -159,14 +159,52 @@ case class TableMetadata(
                              _: GetStructField |
                              _: GetMapValue, right: Literal) =>
         val colName = ZIndexUtil.extractRecursively(equalTo.left).mkString(".")
+        fileMetadata.foreach(println)
+        val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(equalTo.left.dataType)
         fileMetadata.filter {
           case fileStatistics =>
             fileStatistics.minMax
               .get(colName)
               .map {
                 case ColumnMinMax(min, max) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(equalTo.left.dataType)
-                  ordering.lteq(Literal(min).value, right.value) && ordering.gteq(Literal(max).value, right.value)
+                  (Literal(min), Literal(max)) match {
+                    // handle null value case.
+                    case (Literal(null, _), max @ NonNullLiteral(_, _)) if Some(right.value).isDefined =>
+                      ordering.gteq(Literal.create(max).value, right.value)
+                    case (min @ NonNullLiteral(_, _), Literal(null, _)) if Some(right.value).isDefined =>
+                      ordering.lteq(Literal.create(min).value, right.value)
+                    case (min @ NonNullLiteral(_, _), max @ NonNullLiteral(_, _)) if Some(right.value).isDefined =>
+                      ordering.lteq(Literal.create(min).value, right.value) && ordering.gteq(Literal.create(max).value, right.value)
+                    case (Literal(null, _), Literal(null, _)) if Some(right.value).isDefined =>
+                      false
+                    case (min: Literal, max: Literal) if Some(right.value).isEmpty && (Some(min).isEmpty || Some(max).isEmpty) =>
+                      true
+                    case (NonNullLiteral(_, _), NonNullLiteral(_, _)) if Some(right.value).isEmpty =>
+                      false
+                  }
+              }.getOrElse(true)
+        }
+
+      case equalTo @ EqualTo(_: AttributeReference |
+                             _: GetStructField |
+                             _: GetMapValue, right: Literal) =>
+        val colName = ZIndexUtil.extractRecursively(equalTo.left).mkString(".")
+        fileMetadata.foreach(println)
+        val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(equalTo.left.dataType)
+        fileMetadata.filter {
+          case fileStatistics =>
+            fileStatistics.minMax
+              .get(colName)
+              .map {
+                // handle null value case.
+                case ColumnMinMax(null, max) if Some(right.value).isDefined =>
+                  ordering.gteq(Literal.create(max).value, right.value)
+                case ColumnMinMax(min, null) if Some(right.value).isDefined =>
+                  ordering.lteq(Literal.create(min).value, right.value)
+                case ColumnMinMax(min, max) if Some(right.value).isEmpty && (Some(min).isEmpty || Some(max).isEmpty) =>
+                  true
+                case ColumnMinMax(min, max) =>
+                  ordering.lteq(Literal.create(min).value, right.value) && ordering.gteq(Literal.create(max).value, right.value)
               }.getOrElse(true)
         }
 

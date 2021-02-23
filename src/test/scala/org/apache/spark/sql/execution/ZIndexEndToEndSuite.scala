@@ -22,13 +22,14 @@ import java.util.Collections
 import scala.collection.JavaConverters._
 import scala.util.Random
 import com.alibaba.sparkcube.{SchemaUtils, ZIndexUtil}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, ExtractValue, GetStructField}
-import org.apache.spark.sql.catalyst.plans.logical.Project
+import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.execution.metric.SQLMetricsTestUtils
 import org.apache.spark.sql.{DataFrame, QueryTest, Row, SparkSession}
 import org.apache.spark.util.Utils
 
 class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
+
+  val testFileFormatSet = Set("parquet", "json")
 
   // 二维int例子
   test("int basic case") {
@@ -290,35 +291,97 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
     }
   }
 
-  test("map column ") {
-    val format = "json"
-    withTempDir {
-      dir =>
-        val sparkSession = spark
-        import sparkSession.implicits._
-        (1 to 100).map(i => {
-          val info = if (i < 50) "a" else "b"
-          (i, Map("info" -> info, "name" -> s"name_${i}"))
-        }).toDF("col_1", "col_2")
-          .write
-          .format(format)
-          .mode("overwrite")
-          .save(dir.getCanonicalPath)
+  test("map column.") {
+    testFileFormatSet.foreach {
+      format =>
+        withTempDir {
+          dir =>
+            val sparkSession = spark
+            import sparkSession.implicits._
+            (1 to 100).map(i => {
+              val info = if (i < 50) "a" else "b"
+              (i, Map("info" -> info, "name" -> s"name_${i}"))
+            }).toDF("col_1", "col_2")
+              .write
+              .format(format)
+              .mode("overwrite")
+              .save(dir.getCanonicalPath)
 
-        ZIndexUtil.createZIndex(
-          spark, format, dir.getCanonicalPath, Array("col_2['info']"),
-          fileNum = 5, format = format
-        )
-        val df = spark.read
-          .format(format)
-          .load(dir.getCanonicalPath)
-//          .filter("col_2['info'] == 'a'")
-//          .show()
-        testFilters(df,
-          Seq(
-            FilterTestInfo("col_2['info'] == 'a'", 3, 49)
-          )
-        )
+            ZIndexUtil.createZIndex(
+              spark, format, dir.getCanonicalPath, Array("col_2['info']"),
+              fileNum = 5, format = format
+            )
+            val df = spark.read
+              .format(format)
+              .load(dir.getCanonicalPath)
+            //          .filter("col_2['info'] == 'a'")
+            //          .show()
+            testFilters(df,
+              Seq(
+                FilterTestInfo("col_2['info'] == 'a'", 3, 49)
+              )
+            )
+        }
+    }
+  }
+
+  test("map column test case.") {
+    val sparkSession = spark
+    import sparkSession.implicits._
+    val input = (1 to 100).map(i => {
+      val info = if (i < 50) "a" else "b"
+      (i, Map("info" -> info, "name" -> s"name_${i}"))
+    }).toDF("col_1", "col_2")
+
+//    runZIndexTest(
+//      input, Array("col_2['info']"),
+//      Seq(
+//        FilterTestInfo("col_2['info'] == 'a'", 3, 49)
+//      ),
+//      fileNum = 5
+//    )
+
+    val input2 = (1 to 100).map(i => {
+      val info = if (i < 50) "a" else "b"
+      val map = if (i % 3 == 0) {
+        Map("name" -> s"name_$i")
+      } else {
+        Map("info" -> info, "name" -> s"name_${i}")
+      }
+      (i, map)
+    }).toDF("col_1", "col_2")
+
+    runZIndexTest(
+      input2, Array("col_2['info']"),
+      Seq(
+        FilterTestInfo("col_2['info'] = 'a'", 3, 33)
+      ),
+      fileNum = 5
+    )
+  }
+
+  private def runZIndexTest(input: DataFrame,
+                            indexCols: Array[String],
+                            filterInfo: Seq[FilterTestInfo],
+                            fileNum: Int = 16): Unit = {
+    testFileFormatSet.foreach {
+      format =>
+        withTempDir {
+          dir =>
+            input.write
+              .format(format)
+              .mode("overwrite")
+              .save(dir.getCanonicalPath)
+
+            ZIndexUtil.createZIndex(
+              spark, format, dir.getCanonicalPath, indexCols,
+              fileNum = fileNum, format = format
+            )
+            val df = spark.read
+              .format(format)
+              .load(dir.getCanonicalPath)
+            testFilters(df, filterInfo)
+        }
     }
   }
 
@@ -436,12 +499,24 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
     val sparkSession = spark
     import sparkSession.implicits._
 
-    val df = (1 to 100).map(i => {
+    val input2 = (1 to 100).map(i => {
       val info = if (i < 50) "a" else "b"
-      (i, Map("info" -> info, "name" -> s"name_${i}"))
+      val map = if (i % 3 == 0) {
+        Map("name" -> s"name_$i")
+      } else {
+        Map("info" -> info, "name" -> s"name_${i}")
+      }
+      (i, map)
     }).toDF("col_1", "col_2")
-
-    df.write
+      input2.printSchema()
+    input2.selectExpr("col_2['info'] as aaa")
+        .show
+    input2.selectExpr("col_2['info'] as aaa")
+      .orderBy("aaa")
+      .show(100)
+//    input2
+//      .orderBy("col_2['info']")
+//      .show(100)
 
 //    df.selectExpr("col_2['info']").collect()
 //      .foreach(r => {
