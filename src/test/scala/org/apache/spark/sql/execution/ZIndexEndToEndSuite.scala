@@ -21,11 +21,12 @@ import java.util.Collections
 
 import scala.collection.JavaConverters._
 import scala.util.Random
-import com.alibaba.sparkcube.{SchemaUtils, ZIndexUtil}
-import org.apache.spark.sql.catalyst.expressions.Literal
-import org.apache.spark.sql.execution.metric.SQLMetricsTestUtils
+
 import org.apache.spark.sql.{DataFrame, QueryTest, Row, SparkSession}
+import org.apache.spark.sql.execution.metric.SQLMetricsTestUtils
 import org.apache.spark.util.Utils
+
+import com.alibaba.sparkcube.{SchemaUtils, ZIndexUtil}
 
 class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
 
@@ -333,13 +334,13 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
       (i, Map("info" -> info, "name" -> s"name_${i}"))
     }).toDF("col_1", "col_2")
 
-//    runZIndexTest(
-//      input, Array("col_2['info']"),
-//      Seq(
-//        FilterTestInfo("col_2['info'] == 'a'", 3, 49)
-//      ),
-//      fileNum = 5
-//    )
+    runZIndexTest(
+      input, Array("col_2['info']"),
+      Seq(
+        FilterTestInfo("col_2['info'] == 'a'", 3, 49)
+      ),
+      fileNum = 5
+    )
 
     val input2 = (1 to 100).map(i => {
       val info = if (i < 50) "a" else "b"
@@ -355,9 +356,49 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
       input2, Array("col_2['info']"),
       Seq(
         FilterTestInfo("col_2['info'] = 'a'", 3, 33)
+//        FilterTestInfo("col_2['info'] >= 'a'", 5, 67)
       ),
       fileNum = 5
     )
+  }
+
+  test("generate right zindex info") {
+    testFileFormatSet.foreach {
+      format =>
+        withTempDir {
+          dir =>
+            val sparkSession = spark
+            import sparkSession.implicits._
+            val df = (1 to 100).map {
+              case i if i == 3 => Map("k1" -> "a", "k2" -> "b")
+              case _ => Map("k1" -> "a")
+            }.toDF("col_1")
+
+            df.write
+              .format(format)
+              .mode("overwrite")
+              .save(dir.getCanonicalPath)
+
+            ZIndexUtil.createZIndex(
+              spark, format, dir.getCanonicalPath, Array("col_1['k2']"),
+              fileNum = 20, format = format
+            )
+//            ReplaceHadoopFsRelation.relationMetadata.head
+//                ._2
+//                .fileMetadata
+//                .foreach(println)
+//            Thread.sleep(Int.MaxValue)
+            assert(ReplaceHadoopFsRelation.relationMetadata.headOption.isDefined)
+            assert(ReplaceHadoopFsRelation.relationMetadata.head._2.fileMetadata.size == 20)
+            val Array(tail, rest @ _*) =
+              ReplaceHadoopFsRelation.relationMetadata.head._2.fileMetadata.sortBy(_.file).reverse
+            assert(tail.minMax == Map("col_1.k2" -> ColumnMinMax(null, "b")))
+            rest.foreach(f => {
+              assert(f.minMax == Map("col_1.k2" -> ColumnMinMax(null, null)))
+            })
+        }
+    }
+
   }
 
   private def runZIndexTest(input: DataFrame,
@@ -469,108 +510,25 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
   }
 
   test("aa") {
-//    spark.range(1, 1000)
-////      .sort("id")
-//      .write
-//      .format("json")
-//      .mode("overwrite")
-//      .save("/tmp/aaa")
-//    val f = spark.read
-//      .format("json")
-//      .load("/tmp/aaa")
-//    f.queryExecution.analyzed.foreach {
-//      case logicalRelation @ LogicalRelation(
-//        relation @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _) =>
-//        println(location.rootPaths.mkString(""))
-//      case _ =>
-//    }
-//      .sort("id")
-//      .write
-//      .format("json")
-//      .mode("overwrite")
-//      .save("/tmp/bbb")
-//    spark.range(0 , 1000)
-//      .selectExpr("id", "cast(rand() * 1000 as int ) % 3 as col_1")
-//      .createOrReplaceTempView("aaa")
-//
-//    spark.sql("select col_1, id, DENSE_RANK() over(partition by col_1 order by id) as nid from aaa")
-//        .show(200)
+    val df = spark.read.load("file:///Users/fchen/Project/bigdata/SparkCube/tmp/zindex/spark-a11c875b-50c3-47c1-99d3-276981741135/part-00019-9eb05fc4-3297-4270-b746-9b949db84c06-c000.snappy.parquet")
+    df.show(truncate = false)
+    df.createOrReplaceTempView("aa")
+    spark.sql("select min(col_1['k2']) as min, max(col_1['k2']) as max from aa")
+      .show
+
+
 
     val sparkSession = spark
     import sparkSession.implicits._
+    val df2 = Seq(
+      "a", "b", "c", null
+    ).toDF("ca")
+    df2.createOrReplaceTempView("bb")
 
-    val input2 = (1 to 100).map(i => {
-      val info = if (i < 50) "a" else "b"
-      val map = if (i % 3 == 0) {
-        Map("name" -> s"name_$i")
-      } else {
-        Map("info" -> info, "name" -> s"name_${i}")
-      }
-      (i, map)
-    }).toDF("col_1", "col_2")
-      input2.printSchema()
-    input2.selectExpr("col_2['info'] as aaa")
-        .show
-    input2.selectExpr("col_2['info'] as aaa")
-      .orderBy("aaa")
-      .show(100)
-//    input2
-//      .orderBy("col_2['info']")
-//      .show(100)
+//    df.createOrReplaceTempView("aa")
+    spark.sql("select min(ca) as min, max(ca) as max from bb")
+      .show
 
-//    df.selectExpr("col_2['info']").collect()
-//      .foreach(r => {
-//        val x = SchemaUtils.explodeNestedFieldNames(r.schema)
-//        println(x.size)
-//        println(x.mkString("."))
-//        r.schema.fields.foreach(i => {
-//          println(i.getClass.getCanonicalName)
-//          println(i.name)
-//        })
-//      })
-//    df.explain(true)
-//
-//    import org.apache.spark.sql.functions._
-//
-//    println(col("col_2['info']"))
-//
-//
-//    def extractRecursively(expr: Expression): Seq[String] = expr match {
-//      case attr: Attribute => Seq(attr.name)
-//
-//      case Alias(c, _) => extractRecursively(c)
-//
-//      case GetStructField(c, _, Some(name)) => extractRecursively(c) :+ name
-//
-//      case _: ExtractValue =>
-//        fail("Updating nested fields is only supported for StructType.")
-//
-//      case other =>
-//        fail(s"Found unsupported expression '$other' while parsing target column name parts")
-//    }
-//
-//    println(extractRecursively(col("col_2['info']").expr).mkString(","))
-//
-//
-//    df.selectExpr("col_2['info']")
-//      .queryExecution
-//      .analyzed
-//      .foreach(l => {
-//        if (l.isInstanceOf[Project]) {
-//          l.asInstanceOf[Project].projectList.foreach(println)
-//
-//        }
-////        println(l.getClass.getCanonicalName)
-//      })
-//
-//    println(extractRecursively(col("col_2['info']").expr).mkString(","))
-
-
-//    val sparkSession = spark
-//    import sparkSession.implicits._
-//    val df = (0 to 10000).toDF("id")
-//    val df2 = Seq("a", "b", "b", "c", "f", "c").toDF("id")
-//    generateGlobalRankId(df2, "id", "id_rank")
   }
 
   def generateGlobalRankId(df: DataFrame, colName: String, rankColName: String): DataFrame = {

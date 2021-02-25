@@ -172,6 +172,7 @@ case class TableMetadata(
                     case (Literal(null, _), max @ NonNullLiteral(_, _)) if Some(right.value).isDefined =>
                       ordering.gteq(Literal.create(max).value, right.value)
                     case (min @ NonNullLiteral(_, _), Literal(null, _)) if Some(right.value).isDefined =>
+                      // never happen!!!
                       ordering.lteq(Literal.create(min).value, right.value)
                     case (min @ NonNullLiteral(_, _), max @ NonNullLiteral(_, _)) if Some(right.value).isDefined =>
                       ordering.lteq(Literal.create(min).value, right.value) && ordering.gteq(Literal.create(max).value, right.value)
@@ -218,6 +219,7 @@ case class TableMetadata(
               .get(colName)
               .map {
                 case ColumnMinMax(min, max) =>
+                  println(s"min: ${min} ---- max: ${max}")
                   val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(equalTo.right.dataType)
                   ordering.lteq(Literal(min).value, left.value) && ordering.gteq(Literal(max).value, left.value)
               }.getOrElse(true)

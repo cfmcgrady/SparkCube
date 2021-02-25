@@ -56,13 +56,19 @@ object ZIndexUtil extends Logging {
       s"__max_${indexColName(colName)}__"
   }
 
+  private val countColName = {
+    (colName: String) =>
+      s"__count_${indexColName(colName)}__"
+  }
+
   def createZIndex(spark: SparkSession,
                    inputFormat: String,
                    inputPath: String,
                    cols: Array[String],
                    fileNum: Int = 1000,
                    format: String = "parquet",
-                   partitionCols: Option[Seq[String]] = None): Unit = {
+                   partitionCols: Option[Seq[String]] = None,
+                   loadExistIndexTableInfo: Boolean = false): Unit = {
 
     spark.udf.register("arrayZIndex", (vec: Seq[Int]) => ArrayZIndexV2.create(vec).indices)
 
@@ -74,29 +80,37 @@ object ZIndexUtil extends Logging {
 //      Seq("*") ++
 //        cols.map(c => s"DENSE_RANK() over(order by ${c}) - 1 as ${indexColName(c)}"): _*
 //    )
+    if (!loadExistIndexTableInfo) {
+      var rowIdDF: DataFrame = df
+      cols.foreach(c => {
 
-    var rowIdDF: DataFrame = df
-    cols.foreach(c => {
-//      rowIdDF = generateGlobalRankId(rowIdDF, c, indexColName(c))
-      rowIdDF = generateRankIDForSkewedTable(rowIdDF, c, indexColName(c))
-    })
+        // TODO:(fchen) read 10000000 from configurations.
+        if (df.selectExpr(c).distinct().count() < 10000000) {
+          rowIdDF = generateRankIDForSkewedTable(rowIdDF, c, indexColName(c))
+        } else {
+          rowIdDF = generateGlobalRankId(rowIdDF, c, indexColName(c))
+        }
+//        rowIdDF = generateGlobalRankId(rowIdDF, c, indexColName(c))
+//        rowIdDF = generateRankIDForSkewedTable(rowIdDF, c, indexColName(c))
+      })
 
-    val indexDF = rowIdDF.selectExpr(
+      val indexDF = rowIdDF.selectExpr(
         (dataSchema ++
           Array(
             s"arrayZIndex(array(${cols.map(indexColName).mkString(",")})) as __zIndex__"
           )
-        ): _*
+          ): _*
       )
 
-    val writeDF = indexDF
-      .repartitionByRange(fileNum, col("__zIndex__"), (rand() * 1000).cast(IntegerType))
-      .selectExpr(dataSchema: _*)
-      .write
-      .format(format)
-      .mode("overwrite")
-    partitionCols.foreach(cols => writeDF.partitionBy(cols: _*))
-    writeDF.save(tableIndexPath(table))
+      val writeDF = indexDF
+        .repartitionByRange(fileNum, col("__zIndex__"), (rand() * 1000).cast(IntegerType))
+        .selectExpr(dataSchema: _*)
+        .write
+        .format(format)
+        .mode("overwrite")
+      partitionCols.foreach(cols => writeDF.partitionBy(cols: _*))
+      writeDF.save(tableIndexPath(table))
+    }
 
     val tempView = s"__cache_${UUID.randomUUID().toString.replace("-", "")}"
     val tempDF = spark.read
@@ -109,9 +123,13 @@ object ZIndexUtil extends Logging {
         s"min(${c}) as ${minColName(c)}, max($c) as ${maxColName(c)}"
     }.mkString(",")
 
+    val countExpr = cols.map {
+      c => s"count($c) as ${countColName(c)}"
+    }.mkString(",")
+
     val stat = spark.sql(
       s"""
-        |SELECT file, count(*) as numRecords, ${minMaxExpr}
+        |SELECT file, count(*) as numRecords, ${countExpr}, ${minMaxExpr}
         |FROM (
         | SELECT input_file_name() AS file, * FROM ${tempView}
         |) GROUP BY file
@@ -119,70 +137,21 @@ object ZIndexUtil extends Logging {
 
     var metadata = stat.collect()
       .map(r => {
+        val numRecords = r.getAs[Long]("numRecords")
         val minMaxInfo = cols.map(c => {
-          val min = r.get(r.fieldIndex(minColName(c)))
+          // TODO:(fchen) should we add new field which set null value information?
+          val numNonNullRecords = r.getAs[Long](countColName(c))
+          val min = if (numRecords == numNonNullRecords) {
+            r.get(r.fieldIndex(minColName(c)))
+          } else {
+            null
+          }
           val max = r.get(r.fieldIndex(maxColName(c)))
           (getNormalizeColumnName(tempDF, c), ColumnMinMax(min, max))
         }).toMap
         FileStatistics(
           r.getAs[String]("file"),
-          r.getAs[Long]("numRecords"),
-          minMaxInfo
-        )
-      })
-
-    if (partitionCols.isDefined) {
-      metadata = setFilePartitionInfo(metadata, collectPartitionInfo(stat))
-    }
-
-    val zindexMetadata = TableMetadata(
-      tableIndexPath(table),
-      metadata
-    )
-
-    val path = getTablePath(df).toLowerCase()
-    ReplaceHadoopFsRelation.relationMetadata +=
-      (s"${inputFormat.toLowerCase()}.`${path}`" -> zindexMetadata)
-  }
-
-  def loadIndexInfo(spark: SparkSession,
-                   inputFormat: String,
-                   inputPath: String,
-                   cols: Array[String],
-                   fileNum: Int = 1000,
-                   format: String = "parquet",
-                   partitionCols: Option[Seq[String]] = None): Unit = {
-    val df = spark.read.format(inputFormat).load(inputPath)
-    val table = inputPath.split("/").last
-    val tempView = s"__cache_${UUID.randomUUID().toString.replace("-", "")}"
-    val tempDF = spark.read
-      .format(format)
-      .load(tableIndexPath(table))
-    tempDF.createOrReplaceTempView(tempView)
-
-    val minMaxExpr = cols.map {
-      c =>
-        s"min(${c}) as ${minColName(c)}, max($c) as ${maxColName(c)}"
-    }.mkString(",")
-
-    val stat = spark.sql(
-      s"""
-         |SELECT file, count(*) as numRecords, ${minMaxExpr}
-         |FROM (
-         | SELECT input_file_name() AS file, * FROM ${tempView}
-         |) GROUP BY file
-         |""".stripMargin)
-
-    var metadata = stat.collect()
-      .map(r => {
-        val minMaxInfo = cols.map(c => {
-          val min = r.get(r.fieldIndex(minColName(c)))
-          val max = r.get(r.fieldIndex(maxColName(c)))
-          (getNormalizeColumnName(tempDF, c), ColumnMinMax(min, max))
-        }).toMap
-        FileStatistics(
-          r.getAs[String]("file"),
-          r.getAs[Long]("numRecords"),
+          numRecords,
           minMaxInfo
         )
       })
@@ -239,7 +208,7 @@ object ZIndexUtil extends Logging {
     val rankDF = partDF.withColumn("local_rank", row_number().over(w))
       .withColumn("rand_id", rand())
       .repartition(1000, col("rand_id"))
-      .persist()
+      .persist(StorageLevel.DISK_ONLY_2)
 
     rankDF.count
 
@@ -262,6 +231,8 @@ object ZIndexUtil extends Logging {
     val finalDF = rankDF.join(
       broadcast(joinDF), Seq("partitionId"),"inner")
       .withColumn(rankColName, ($"local_rank" + $"sum_factor" - 1).cast(IntegerType))
+
+    rankDF.unpersist()
 
     finalDF.selectExpr((rankColName :: Nil ++ inputSchema): _*)
   }
@@ -293,7 +264,9 @@ object ZIndexUtil extends Logging {
 
       cachedDF.alias("l")
         .join(
-          broadcast(idDF.alias("r")), $"l.${colName}" === $"r.${colName}"
+          broadcast(idDF.alias("r")),
+          $"l.${colName}" === $"r.${colName}",
+          "left"
         )
         .selectExpr(inputSchema.map(i => s"l.$i") ++ Array(rankColName): _*)
     } finally {
