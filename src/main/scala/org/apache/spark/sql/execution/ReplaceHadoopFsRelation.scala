@@ -177,7 +177,7 @@ case class TableMetadata(
                       ordering.lteq(Literal.create(min).value, right.value) && ordering.gteq(Literal.create(max).value, right.value)
                     case (Literal(null, _), Literal(null, _)) if Some(right.value).isDefined =>
                       false
-                    case (min: Literal, max: Literal) if Some(right.value).isEmpty && (Some(min).isEmpty || Some(max).isEmpty) =>
+                    case (min: Literal, max: Literal) if Some(right.value).isEmpty && (Some(min.value).isEmpty || Some(max.value).isEmpty) =>
                       true
                     case (NonNullLiteral(_, _), NonNullLiteral(_, _)) if Some(right.value).isEmpty =>
                       false

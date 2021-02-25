@@ -19,16 +19,17 @@ package com.alibaba.sparkcube
 
 import java.util.UUID
 
-import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, ExtractValue, GetMapValue, GetStructField, Literal}
-import org.apache.spark.sql.catalyst.plans.logical.Project
-
 import scala.collection.mutable.HashMap
+
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, GetMapValue, GetStructField, Literal}
+import org.apache.spark.sql.catalyst.plans.logical.Project
 import org.apache.spark.sql.execution.{ArrayZIndexV2, ColumnMinMax, FileStatistics, ReplaceHadoopFsRelation, TableMetadata}
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionSpec}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.storage.StorageLevel
 
 object ZIndexUtil extends Logging {
 
@@ -76,7 +77,8 @@ object ZIndexUtil extends Logging {
 
     var rowIdDF: DataFrame = df
     cols.foreach(c => {
-      rowIdDF = generateGlobalRankId(rowIdDF, c, indexColName(c))
+//      rowIdDF = generateGlobalRankId(rowIdDF, c, indexColName(c))
+      rowIdDF = generateRankIDForSkewedTable(rowIdDF, c, indexColName(c))
     })
 
     val indexDF = rowIdDF.selectExpr(
@@ -88,7 +90,7 @@ object ZIndexUtil extends Logging {
       )
 
     val writeDF = indexDF
-      .repartitionByRange(fileNum, col("__zIndex__"))
+      .repartitionByRange(fileNum, col("__zIndex__"), (rand() * 1000).cast(IntegerType))
       .selectExpr(dataSchema: _*)
       .write
       .format(format)
@@ -143,6 +145,62 @@ object ZIndexUtil extends Logging {
       (s"${inputFormat.toLowerCase()}.`${path}`" -> zindexMetadata)
   }
 
+  def loadIndexInfo(spark: SparkSession,
+                   inputFormat: String,
+                   inputPath: String,
+                   cols: Array[String],
+                   fileNum: Int = 1000,
+                   format: String = "parquet",
+                   partitionCols: Option[Seq[String]] = None): Unit = {
+    val df = spark.read.format(inputFormat).load(inputPath)
+    val table = inputPath.split("/").last
+    val tempView = s"__cache_${UUID.randomUUID().toString.replace("-", "")}"
+    val tempDF = spark.read
+      .format(format)
+      .load(tableIndexPath(table))
+    tempDF.createOrReplaceTempView(tempView)
+
+    val minMaxExpr = cols.map {
+      c =>
+        s"min(${c}) as ${minColName(c)}, max($c) as ${maxColName(c)}"
+    }.mkString(",")
+
+    val stat = spark.sql(
+      s"""
+         |SELECT file, count(*) as numRecords, ${minMaxExpr}
+         |FROM (
+         | SELECT input_file_name() AS file, * FROM ${tempView}
+         |) GROUP BY file
+         |""".stripMargin)
+
+    var metadata = stat.collect()
+      .map(r => {
+        val minMaxInfo = cols.map(c => {
+          val min = r.get(r.fieldIndex(minColName(c)))
+          val max = r.get(r.fieldIndex(maxColName(c)))
+          (getNormalizeColumnName(tempDF, c), ColumnMinMax(min, max))
+        }).toMap
+        FileStatistics(
+          r.getAs[String]("file"),
+          r.getAs[Long]("numRecords"),
+          minMaxInfo
+        )
+      })
+
+    if (partitionCols.isDefined) {
+      metadata = setFilePartitionInfo(metadata, collectPartitionInfo(stat))
+    }
+
+    val zindexMetadata = TableMetadata(
+      tableIndexPath(table),
+      metadata
+    )
+
+    val path = getTablePath(df).toLowerCase()
+    ReplaceHadoopFsRelation.relationMetadata +=
+      (s"${inputFormat.toLowerCase()}.`${path}`" -> zindexMetadata)
+  }
+
   /**
    * reference: https://medium.com/swlh/computing-global-rank-of-a-row-in-a-dataframe-with-spark-sql-34f6cc650ae5
    *
@@ -168,6 +226,7 @@ object ZIndexUtil extends Logging {
 
     val partDF = df
       .orderBy(colName) // ==> 通过range partition来实现的
+      // =====> 在这里实现bin packing 的分区方法？
       .withColumn("partitionId", spark_partition_id())
 
 //    partDF.createOrReplaceTempView("aaa")
@@ -205,6 +264,41 @@ object ZIndexUtil extends Logging {
       .withColumn(rankColName, ($"local_rank" + $"sum_factor" - 1).cast(IntegerType))
 
     finalDF.selectExpr((rankColName :: Nil ++ inputSchema): _*)
+  }
+
+  def generateRankIDForSkewedTable(df: DataFrame,
+                                   colName: String,
+                                   rankColName: String): DataFrame = {
+
+    // if the input column is a nested column, we should normalize the input column name.
+    if (isNestedColumn(df, colName)) {
+      val newColName = s"__col_${colName.hashCode.toString.replaceAll("-", "")}__"
+      val newDF = df.selectExpr("*", s"$colName as $newColName")
+      return generateRankIDForSkewedTable(newDF, newColName, rankColName)
+        .selectExpr((Seq(rankColName) ++ df.schema.map(_.name)): _*)
+    }
+
+    val inputSchema = df.schema.map(_.name)
+    val spark = df.sparkSession
+    import org.apache.spark.sql.functions._
+    import spark.implicits._
+    import org.apache.spark.sql.expressions.Window
+
+//    df.withColumn("rand_id", (rand() * 1000).cast(IntegerType))
+    val cachedDF = df.persist(StorageLevel.DISK_ONLY_2)
+
+    try {
+      val idDF = cachedDF.dropDuplicates(colName)
+        .withColumn(rankColName, rank.over(Window.orderBy(colName)) - 1)
+
+      cachedDF.alias("l")
+        .join(
+          broadcast(idDF.alias("r")), $"l.${colName}" === $"r.${colName}"
+        )
+        .selectExpr(inputSchema.map(i => s"l.$i") ++ Array(rankColName): _*)
+    } finally {
+      cachedDF.unpersist()
+    }
   }
 
   def extractRecursively(expr: Expression): Seq[String] = expr match {
