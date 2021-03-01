@@ -25,7 +25,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, GetMapValue, GetStructField, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.Project
-import org.apache.spark.sql.execution.{ArrayZIndexV2, ColumnMinMax, FileStatistics, ReplaceHadoopFsRelation, TableMetadata}
+import org.apache.spark.sql.execution.{ArrayZIndexV2, ColumnStatistics, FileStatistics, ReplaceHadoopFsRelation, TableMetadata}
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionSpec}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.IntegerType
@@ -139,15 +139,12 @@ object ZIndexUtil extends Logging {
       .map(r => {
         val numRecords = r.getAs[Long]("numRecords")
         val minMaxInfo = cols.map(c => {
-          // TODO:(fchen) should we add new field which set null value information?
+          val normalizedColName = getNormalizedColumnName(tempDF, c)
+          val min = Option(r.get(r.fieldIndex(minColName(c))))
+          val max = Option(r.get(r.fieldIndex(maxColName(c))))
           val numNonNullRecords = r.getAs[Long](countColName(c))
-          val min = if (numRecords == numNonNullRecords) {
-            r.get(r.fieldIndex(minColName(c)))
-          } else {
-            null
-          }
-          val max = r.get(r.fieldIndex(maxColName(c)))
-          (getNormalizeColumnName(tempDF, c), ColumnMinMax(min, max))
+          val containsNull = numRecords != numNonNullRecords
+          (normalizedColName, ColumnStatistics(normalizedColName, min, max, containsNull))
         }).toMap
         FileStatistics(
           r.getAs[String]("file"),
@@ -290,7 +287,7 @@ object ZIndexUtil extends Logging {
         s"Found unsupported expression '$other' while parsing target column name parts")
   }
 
-  private def getNormalizeColumnName(df: DataFrame, colName: String): String = {
+  private def getNormalizedColumnName(df: DataFrame, colName: String): String = {
     df.selectExpr(colName)
       .queryExecution
       .analyzed

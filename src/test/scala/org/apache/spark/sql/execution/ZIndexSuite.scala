@@ -91,6 +91,14 @@ class ZIndexSuite extends SparkFunSuite{
     println(Integer.toUnsignedLong(-1))
     println(Long.MaxValue)
 
+    println(Some(null))
+    println(None)
+    println(None == Some(null))
+    println(None == Option(null))
+    println(Option("a"))
+
+    Array(1, 2, 3).diff(Array(2)).foreach(println)
+
 
 
   }

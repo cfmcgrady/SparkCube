@@ -1,16 +1,18 @@
 // scalastyle:off
 package org.apache.spark.sql.execution
 
-import com.alibaba.sparkcube.{SchemaUtils, ZIndexUtil}
+import com.alibaba.sparkcube.ZIndexUtil
 import org.apache.hadoop.fs.Path
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualNullSafe, EqualTo, Expression, GetMapValue, GetStructField, GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual, Literal, NonNullLiteral, Or}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualNullSafe, EqualTo, Expression, GetMapValue, GetStructField, GreaterThan, GreaterThanOrEqual, In, InSet, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, NonNullLiteral, Not, Or, StartsWith}
 import org.apache.spark.sql.catalyst.plans.logical.{Filter, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex, LogicalRelation, PartitionDirectory, PartitionPath}
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{StringType, StructType}
+import org.apache.spark.unsafe.types.UTF8String
 
 case class ReplaceHadoopFsRelation() extends Rule[LogicalPlan] {
   override def apply(plan: LogicalPlan): LogicalPlan = {
@@ -54,44 +56,50 @@ class ZIndexInMemoryFileIndex(
       return files
     }
 
-    println(s"filter----${filter}")
-    if (partitionSpec().partitionColumns.isEmpty) {
-      val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
-      val paths = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
-        .findTouchFileByExpression(filter)
-        .map(i => {
-          logInfo(s"input file: ${i}")
-          i
-        })
-        .map(zi => nameToFileStatus(zi.file.toLowerCase))
-        .toSeq
-      PartitionDirectory(InternalRow.empty, paths) :: Nil
-    } else {
-      val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
+    try {
+      println(s"filter----${filter}")
+      if (partitionSpec().partitionColumns.isEmpty) {
+        val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
+        val paths = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
+          .findTouchFileByExpression(filter)
+          .map(i => {
+            logInfo(s"input file: ${i}")
+            i
+          })
+          .map(zi => nameToFileStatus(zi.file.toLowerCase))
+          .toSeq
+        PartitionDirectory(InternalRow.empty, paths) :: Nil
+      } else {
+        val nameToFileStatus = files.flatMap(_.files.map(f => (f.getPath.toUri.normalize.toString.toLowerCase, f))).toMap
 
-      val selectedPartitions = files.map(_.values).toSet
-      val metadata = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
+        val selectedPartitions = files.map(_.values).toSet
+        val metadata = ReplaceHadoopFsRelation.relationMetadata(tableIdentifier)
 
-      val selectedFiles = metadata.fileMetadata
-        .filter(fm => {
-          fm.filePartitionPath.isDefined && selectedPartitions.contains(fm.filePartitionPath.get.values)
-        })
+        val selectedFiles = metadata.fileMetadata
+          .filter(fm => {
+            fm.filePartitionPath.isDefined && selectedPartitions.contains(fm.filePartitionPath.get.values)
+          })
 
-      val selectedMetadata = metadata.copy(fileMetadata = selectedFiles)
+        val selectedMetadata = metadata.copy(fileMetadata = selectedFiles)
 
-      selectedMetadata.findTouchFileByExpression(filter)
-        .map(i => {
-          logInfo(s"input file: ${i}")
-          i
-        })
-        .map(zi => (zi, nameToFileStatus(zi.file.toLowerCase)))
-        .groupBy {
-          case (zi, fs) =>
-            zi.filePartitionPath
-        }.map {
+        selectedMetadata.findTouchFileByExpression(filter)
+          .map(i => {
+            logInfo(s"input file: ${i}")
+            i
+          })
+          .map(zi => (zi, nameToFileStatus(zi.file.toLowerCase)))
+          .groupBy {
+            case (zi, fs) =>
+              zi.filePartitionPath
+          }.map {
           case (Some(partitionPath), array) =>
             PartitionDirectory(partitionPath.values, array.map(_._2))
         }.toSeq
+      }
+    } catch {
+      case ex: Exception =>
+        logError(s"fail on match condition ${filter}", ex)
+        files
     }
 
   }
@@ -121,12 +129,16 @@ case class ZIndexFileInfoV2(
   }
 }
 
-case class ColumnMinMax(min: Any, max: Any)
+case class ColumnStatistics(
+    colName: String,
+    min: Option[Any],
+    max: Option[Any],
+    containsNull: Boolean)
 
 case class FileStatistics(
     file: String,
     numRecords: Long,
-    minMax: Map[String, ColumnMinMax],
+    columnStatistics: Map[String, ColumnStatistics],
     filePartitionPath: Option[PartitionPath] = None)
 
 /**
@@ -136,191 +148,233 @@ case class FileStatistics(
  */
 case class TableMetadata(
     basePath: String,
-    fileMetadata: Array[FileStatistics]) {
+    fileMetadata: Array[FileStatistics]) extends Logging {
 
   // 遍历filter条件，获取命中的文件
+  /**
+   * transforms the conditions and return the hit files.
+   *
+   * for more about detail of null value semantics, please visit: https://spark.apache.org/docs/latest/sql-ref-null-semantics.html
+   *
+   * @param condition
+   * @return
+   */
   def findTouchFileByExpression(condition: Expression): Array[FileStatistics] = {
 
-    def equalTo(left: String, right: Literal): Unit = {
-//      fileMetadata.filter {
-//        case fileStatistics =>
-//          fileStatistics.minMax
-//            .get(left)
-//            .map {
-//              case ColumnMinMax(min, max) =>
-//                val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
-//                ordering.lteq(Literal(min).value, right.value) && ordering.gteq(Literal(max).value, right.value)
-//            }.getOrElse(true)
-//      }
+    def equalTo(left: Expression, right: Literal): Array[FileStatistics] = {
+      val colName = ZIndexUtil.extractRecursively(left).mkString(".")
+      val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+      fileMetadata.filter {
+        case fileStatistics =>
+          fileStatistics.columnStatistics
+            .get(colName).forall {
+            // `any value = null` return null in spark sql, and this expression will be optimize by catalyst
+            // (means this operation will be execute by spark engine).
+            // so we don't consider null value for right expression.
+            case ColumnStatistics(_, None, None, _) =>
+              false
+            case ColumnStatistics(_, Some(min), Some(max), _) =>
+              ordering.lteq(Literal.create(min).value, right.value) && ordering.gteq(Literal.create(max).value, right.value)
+          }
+      }
+    }
+
+    def equalNullSafe(left: Expression, right: Literal): Array[FileStatistics] = {
+      val colName = ZIndexUtil.extractRecursively(left).mkString(".")
+      val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+      fileMetadata.filter {
+        case fileStatistics =>
+          fileStatistics.columnStatistics
+            .get(colName).forall {
+            // start--- right == null case --- //
+            case ColumnStatistics(_, _, _, true) if Option(right.value).isEmpty =>
+              true
+            case ColumnStatistics(_, _, _, false) if Option(right.value).isEmpty =>
+              false
+            // end--- right == null case --- //
+            // right not null case, the same with EqualTo
+            case ColumnStatistics(_, None, None, _) =>
+              false
+            case ColumnStatistics(_, Some(min), Some(max), _) =>
+              ordering.lteq(Literal.create(min).value, right.value) && ordering.gteq(Literal.create(max).value, right.value)
+          }
+      }
+    }
+
+    def lessThan(left: Expression, right: Literal): Array[FileStatistics] = {
+      val colName = ZIndexUtil.extractRecursively(left).mkString(".")
+      val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+      fileMetadata.filter {
+        case fileStatistics =>
+          fileStatistics.columnStatistics
+            .get(colName)
+            .forall {
+              // the same with EqualTo, we don't need consider null value for right Expression.
+              case ColumnStatistics(_, None, None, _) =>
+                false
+              case ColumnStatistics(_, Some(min), _, _) =>
+                ordering.lt(Literal(min).value, right.value)
+            }
+      }
+    }
+
+    def lessThanOrEqual(left: Expression, right: Literal): Array[FileStatistics] = {
+      val colName = ZIndexUtil.extractRecursively(left).mkString(".")
+      val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+      fileMetadata.filter {
+        case fileStatistics =>
+          fileStatistics.columnStatistics
+            .get(colName)
+            .forall {
+              // the same with EqualTo, we don't need consider null value for right Expression.
+              case ColumnStatistics(_, None, None, _) =>
+                false
+              case ColumnStatistics(_, Some(min), _, _) =>
+                ordering.lteq(Literal(min).value, right.value)
+            }
+      }
+    }
+
+    def greaterThan(left: Expression, right: Literal): Array[FileStatistics] = {
+      val colName = ZIndexUtil.extractRecursively(left).mkString(".")
+      val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+      fileMetadata.filter {
+        case fileStatistics =>
+          fileStatistics.columnStatistics
+            .get(colName)
+            .forall {
+              // the same with EqualTo, we don't need consider null value for right Expression.
+              case ColumnStatistics(_, None, None, _) =>
+                false
+              case ColumnStatistics(_, _, Some(max), _) =>
+                ordering.gt(Literal(max).value, right.value)
+            }
+      }
+    }
+
+    def greaterThanOrEqual(left: Expression, right: Literal): Array[FileStatistics] = {
+      val colName = ZIndexUtil.extractRecursively(left).mkString(".")
+      val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
+      fileMetadata.filter {
+        case fileStatistics =>
+          fileStatistics.columnStatistics
+            .get(colName)
+            .forall {
+              // the same with EqualTo, we don't need consider null value for right Expression.
+              case ColumnStatistics(_, None, None, _) =>
+                false
+              case ColumnStatistics(_, _, Some(max), _) =>
+                ordering.gteq(Literal(max).value, right.value)
+            }
+      }
     }
 
     condition match {
-      case equalTo @ EqualTo(_: AttributeReference |
-                             _: GetStructField |
-                             _: GetMapValue, right: Literal) =>
-        val colName = ZIndexUtil.extractRecursively(equalTo.left).mkString(".")
-        fileMetadata.foreach(println)
-        val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(equalTo.left.dataType)
+      case et @ EqualTo(_: AttributeReference |
+                        _: GetStructField |
+                        _: GetMapValue, right: Literal) =>
+        equalTo(et.left, right)
+
+      case et @ EqualTo(left: Literal, _: AttributeReference |
+                                       _: GetStructField |
+                                       _: GetMapValue) =>
+        equalTo(et.right, left)
+
+      case lt @ LessThan(_: AttributeReference |
+                         _: GetStructField |
+                         _: GetMapValue, right: Literal) =>
+        lessThan(lt.left, right)
+      case lt @ LessThan(left: Literal, _: AttributeReference |
+                                        _: GetStructField |
+                                        _: GetMapValue) =>
+        greaterThan(lt.right, left)
+      case lteq @ LessThanOrEqual(_: AttributeReference |
+                                  _: GetStructField |
+                                  _: GetMapValue, right: Literal) =>
+        lessThanOrEqual(lteq.left, right)
+
+      case lteq @ LessThanOrEqual(left: Literal, _: AttributeReference |
+                                                 _: GetStructField |
+                                                 _: GetMapValue) =>
+        greaterThanOrEqual(lteq.right, left)
+
+      case gt @ GreaterThan(_: AttributeReference |
+                            _: GetStructField |
+                            _:GetMapValue, right: Literal) =>
+        greaterThan(gt.left, right)
+
+      case gt @ GreaterThan(left: Literal, _: AttributeReference |
+                                           _: GetStructField |
+                                           _: GetMapValue) =>
+        lessThan(gt.right, left)
+
+      case gt @ GreaterThanOrEqual(_: AttributeReference |
+                                   _: GetStructField |
+                                   _: GetMapValue, right: Literal) =>
+        greaterThanOrEqual(gt.left, right)
+
+      case gt @ GreaterThanOrEqual(left: Literal, _: AttributeReference |
+                                                  _: GetStructField |
+                                                  _: GetMapValue) =>
+        lessThanOrEqual(gt.right, left)
+      case isNull @ IsNull(_: AttributeReference | _: GetStructField | _: GetMapValue) =>
+        val colName = ZIndexUtil.extractRecursively(isNull.child).mkString(".")
         fileMetadata.filter {
           case fileStatistics =>
-            fileStatistics.minMax
+            fileStatistics.columnStatistics
               .get(colName)
-              .map {
-                case ColumnMinMax(min, max) =>
-                  (Literal(min), Literal(max)) match {
-                    // handle null value case.
-                    case (Literal(null, _), max @ NonNullLiteral(_, _)) if Some(right.value).isDefined =>
-                      ordering.gteq(Literal.create(max).value, right.value)
-                    case (min @ NonNullLiteral(_, _), Literal(null, _)) if Some(right.value).isDefined =>
-                      // never happen!!!
-                      ordering.lteq(Literal.create(min).value, right.value)
-                    case (min @ NonNullLiteral(_, _), max @ NonNullLiteral(_, _)) if Some(right.value).isDefined =>
-                      ordering.lteq(Literal.create(min).value, right.value) && ordering.gteq(Literal.create(max).value, right.value)
-                    case (Literal(null, _), Literal(null, _)) if Some(right.value).isDefined =>
-                      false
-                    case (min: Literal, max: Literal) if Some(right.value).isEmpty && (Some(min.value).isEmpty || Some(max.value).isEmpty) =>
-                      true
-                    case (NonNullLiteral(_, _), NonNullLiteral(_, _)) if Some(right.value).isEmpty =>
-                      false
-                  }
-              }.getOrElse(true)
+              .forall {
+                case ColumnStatistics(_, _, _, containsNull) => containsNull
+              }
         }
 
-      case equalTo @ EqualTo(_: AttributeReference |
-                             _: GetStructField |
-                             _: GetMapValue, right: Literal) =>
-        val colName = ZIndexUtil.extractRecursively(equalTo.left).mkString(".")
-        fileMetadata.foreach(println)
-        val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(equalTo.left.dataType)
+      case isNotNull@ IsNotNull(_: AttributeReference | _: GetStructField | _: GetMapValue) =>
+        val colName = ZIndexUtil.extractRecursively(isNotNull.child).mkString(".")
         fileMetadata.filter {
           case fileStatistics =>
-            fileStatistics.minMax
+            fileStatistics.columnStatistics
               .get(colName)
-              .map {
-                // handle null value case.
-                case ColumnMinMax(null, max) if Some(right.value).isDefined =>
-                  ordering.gteq(Literal.create(max).value, right.value)
-                case ColumnMinMax(min, null) if Some(right.value).isDefined =>
-                  ordering.lteq(Literal.create(min).value, right.value)
-                case ColumnMinMax(min, max) if Some(right.value).isEmpty && (Some(min).isEmpty || Some(max).isEmpty) =>
-                  true
-                case ColumnMinMax(min, max) =>
-                  ordering.lteq(Literal.create(min).value, right.value) && ordering.gteq(Literal.create(max).value, right.value)
-              }.getOrElse(true)
+              .forall {
+                case ColumnStatistics(_, _, _, containsNull) => !containsNull
+              }
         }
 
-      case equalTo @ EqualTo(left: Literal, _: AttributeReference |
-                                            _: GetStructField |
-                                            _: GetMapValue) =>
-        val colName = ZIndexUtil.extractRecursively(equalTo.right).mkString(".")
+      case _ @ StartsWith(attribute, value @ Literal(_: UTF8String, _)) =>
+        val colName = ZIndexUtil.extractRecursively(attribute).mkString(".")
+        val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(StringType)
         fileMetadata.filter {
           case fileStatistics =>
-            fileStatistics.minMax
-              .get(colName)
-              .map {
-                case ColumnMinMax(min, max) =>
-                  println(s"min: ${min} ---- max: ${max}")
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(equalTo.right.dataType)
-                  ordering.lteq(Literal(min).value, left.value) && ordering.gteq(Literal(max).value, left.value)
-              }.getOrElse(true)
-        }
-      case _ @ LessThan(left: AttributeReference, right: Literal) =>
-        fileMetadata.filter {
-          case fileStatistics =>
-            fileStatistics.minMax
-              .get(left.name)
-              .map {
-                case ColumnMinMax(min, _) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
-                  ordering.lt(Literal(min).value, right.value)
-              }.getOrElse(true)
-        }
-      case _ @ LessThan(left: Literal, right: AttributeReference) =>
-        fileMetadata.filter {
-          case fileStatistics =>
-            fileStatistics.minMax
-              .get(right.name)
-              .map {
-                case ColumnMinMax(_, max) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
-                  ordering.lt(left.value, Literal(max).value)
-              }.getOrElse(true)
-        }
-      case _ @ LessThanOrEqual(left: AttributeReference, right: Literal) =>
-        fileMetadata.filter {
-          case fileStatistics =>
-            fileStatistics.minMax
-              .get(left.name)
-              .map {
-                case ColumnMinMax(min, _) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
-                  ordering.lteq(Literal(min).value, right.value)
-              }.getOrElse(true)
+            fileStatistics.columnStatistics
+              .get(colName).forall {
+              case ColumnStatistics(_, None, None, _) =>
+                false
+              case ColumnStatistics(_, Some(min: String), Some(max: String), _) =>
+                val minLit = Literal(min)
+                val maxLit = Literal(max)
+                ordering.lteq(minLit.value, value.value) && ordering.gteq(maxLit.value, value.value) ||
+                // if min/max start with value, we should also return this file.
+                minLit.value.asInstanceOf[UTF8String].startsWith(value.value.asInstanceOf[UTF8String]) ||
+                maxLit.value.asInstanceOf[UTF8String].startsWith(value.value.asInstanceOf[UTF8String])
+            }
         }
 
-      case _ @ LessThanOrEqual(left: Literal, right: AttributeReference) =>
-        fileMetadata.filter {
-          case fileStatistics =>
-            fileStatistics.minMax
-              .get(right.name)
-              .map {
-                case ColumnMinMax(_, max) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
-                  ordering.lteq(left.value, Literal(max).value)
-              }.getOrElse(true)
-        }
-
-      case _ @ GreaterThan(left: AttributeReference, right: Literal) =>
-        fileMetadata.filter {
-          case fileStatistics =>
-            fileStatistics.minMax
-              .get(left.name)
-              .map {
-                case ColumnMinMax(_, max) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
-                  ordering.gt(Literal(max).value, right.value)
-              }.getOrElse(true)
-        }
-
-      case _ @ GreaterThan(left: Literal, right: AttributeReference) =>
-        fileMetadata.filter {
-          case fileStatistics =>
-            fileStatistics.minMax
-              .get(right.name)
-              .map {
-                case ColumnMinMax(min, _) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
-                  ordering.gt(left.value, Literal(min).value)
-              }.getOrElse(true)
-        }
-
-      case _ @ GreaterThanOrEqual(left: AttributeReference, right: Literal) =>
-        fileMetadata.filter {
-          case fileStatistics =>
-            fileStatistics.minMax
-              .get(left.name)
-              .map {
-                case ColumnMinMax(_, max) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
-                  ordering.gteq(Literal(max).value, right.value)
-              }.getOrElse(true)
-        }
-      case _ @ GreaterThanOrEqual(left: Literal, right: AttributeReference) =>
-        fileMetadata.filter {
-          case fileStatistics =>
-            fileStatistics.minMax
-              .get(right.name)
-              .map {
-                case ColumnMinMax(min, _) =>
-                  val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(right.dataType)
-                  ordering.gteq(left.value, Literal(min).value)
-              }.getOrElse(true)
-        }
-
-      case e @ EqualNullSafe(left: AttributeReference, right: Literal) =>
-        fileMetadata
-      case e @ EqualNullSafe(left: Literal, right: AttributeReference) =>
-        fileMetadata
+      case in@ In(_: AttributeReference | _: GetStructField | _: GetMapValue, list: Seq[Literal]) =>
+        list.flatMap {
+          // `column in (null)` will not transform to psychical plan, just exclude null value and return empty array.
+          case Literal(null, _) => Array.empty[FileStatistics]
+          case lit: Literal =>
+            equalTo(in.value, lit)
+        }.distinct
+          .toArray
+      // TODO:(fchen) inset support!
+      case ens @ EqualNullSafe(_: AttributeReference |
+                               _: GetStructField |
+                               _: GetMapValue, right: Literal) =>
+        equalNullSafe(ens.left, right)
+      case ens @ EqualNullSafe(left: Literal, _: AttributeReference |
+                                              _: GetStructField |
+                                              _: GetMapValue) =>
+        equalNullSafe(ens.right, left)
       case a: And =>
         val resLeft = findTouchFileByExpression(a.left)
         val resRight = findTouchFileByExpression(a.right)
@@ -331,8 +385,29 @@ case class TableMetadata(
         val resRight = findTouchFileByExpression(or.right)
         // 并集
         resLeft.union(resRight).distinct
-      case _ =>
-        fileMetadata
+
+      case not @ Not(in @ In(_: AttributeReference | _: GetStructField | _: GetMapValue, list: Seq[Literal])) =>
+        val colName = ZIndexUtil.extractRecursively(in.value).mkString(".")
+        val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(in.value.dataType)
+        list.flatMap {
+          // `column in (null)` will not transform to psychical plan, just exclude null value and return empty array.
+          case Literal(null, _) => return Array.empty[FileStatistics]
+          case lit: Literal =>
+            fileMetadata.filter {
+              case fileStatistics =>
+                fileStatistics.columnStatistics
+                  .get(colName).forall {
+                  // `any value = null` return null in spark sql, and this expression will be optimize by catalyst
+                  // (means this operation will be execute by spark engine).
+                  // so we don't consider null value for right expression.
+                  case ColumnStatistics(_, None, None, _) =>
+                    false
+                  case ColumnStatistics(_, Some(min), Some(max), _) =>
+                    !(ordering.equiv(Literal(min).value, lit.value) && ordering.equiv(Literal(max).value, lit.value))
+                }
+            }
+        }.distinct
+          .toArray
     }
 
   }

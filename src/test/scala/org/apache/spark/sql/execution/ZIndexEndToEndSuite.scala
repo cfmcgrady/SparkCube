@@ -26,11 +26,18 @@ import org.apache.spark.sql.{DataFrame, QueryTest, Row, SparkSession}
 import org.apache.spark.sql.execution.metric.SQLMetricsTestUtils
 import org.apache.spark.util.Utils
 
-import com.alibaba.sparkcube.{SchemaUtils, ZIndexUtil}
+import com.alibaba.sparkcube.ZIndexUtil
+import org.scalatest.BeforeAndAfterEach
 
-class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
+class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils with BeforeAndAfterEach {
 
-  val testFileFormatSet = Set("parquet", "json")
+  val testFileFormatSet = Set("parquet")
+  val sparkSession: SparkSession = spark
+  import sparkSession.implicits._
+
+  override def afterEach(): Unit = {
+    ReplaceHadoopFsRelation.relationMetadata = Map.empty
+  }
 
   // 二维int例子
   test("int basic case") {
@@ -88,7 +95,6 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
 
     withTempDir {
       dir =>
-        import org.apache.spark.sql.functions._
         spark.range(0, 1000)
           .selectExpr("id as col_1", "'x' as col_2")
           .write
@@ -355,10 +361,116 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
     runZIndexTest(
       input2, Array("col_2['info']"),
       Seq(
-        FilterTestInfo("col_2['info'] = 'a'", 3, 33)
-//        FilterTestInfo("col_2['info'] >= 'a'", 5, 67)
+        FilterTestInfo("col_2['info'] = 'a'", 3, 33),
+        FilterTestInfo("col_2['info'] >= 'a'", 4, 67)
       ),
       fileNum = 5
+    )
+  }
+
+  test("column contains null value case.") {
+    val input = (1 to 100).map {
+      case i if i % 2 == 0 => null
+      case i => i.toString
+    }.toDF("col_1")
+
+    runZIndexTest(
+      input, Array("col_1"),
+      Seq(
+        FilterTestInfo("col_1 = '1'", 1, 1),
+        FilterTestInfo("col_1 = null", 0, 0),
+        FilterTestInfo("col_1 < '3'", 3, 11),
+        FilterTestInfo("col_1 > '8'", 3, 11),
+        FilterTestInfo("col_1 is null", 10, 50),
+        FilterTestInfo("col_1 is not null", 10, 50),
+        FilterTestInfo("col_1 in ('1', '9')", 2, 2),
+        FilterTestInfo("col_1 in (null)", 0, 0),
+        FilterTestInfo("col_1 not in ('1', '9')", 10, 48),
+        FilterTestInfo("col_1 not in ('1', '9', null)", 0, 0),
+//        FilterTestInfo("col_1 in (select null)", 0, 0)
+//        FilterTestInfo("col_1 not in (select null)", 0, 0)
+        FilterTestInfo("col_1 in ('1', null)", 1, 1),
+        FilterTestInfo("col_1 like '1%'", 2, 6),
+        FilterTestInfo("col_1 <=> null", 10, 50),
+        FilterTestInfo("col_1 <=> '1'", 1, 1)
+      ),
+      fileNum = 20
+    )
+  }
+
+//  test("filter with StingStartWith should work fine.") {
+//    withTempDir {
+//      dir =>
+//        (1 to 200).foreach(fileNum => {
+//          val format = "parquet"
+//          val input = (1 to 10000).flatMap(_ => {
+//            val size = Random.nextInt(50) + 20
+//
+//            var res: List[String] = List()
+//
+//            (0 to size).foreach(j => {
+//              val last = res.lift(j - 1)
+//              res ++= (last.getOrElse("") + ('a'.toInt + Random.nextInt(25)).toChar.toString) :: Nil
+//            })
+//            res
+//          })
+//
+//          input.toDF("id")
+//            .write
+//            .format(format)
+//            .mode("overwrite")
+//            .save(dir.getCanonicalPath)
+//          ZIndexUtil.createZIndex(
+//            spark, format, dir.getCanonicalPath, Array("id"),
+//            fileNum = fileNum, format = format
+//          )
+//          val df = spark.read
+//            .format(format)
+//            .load(dir.getCanonicalPath)
+//
+////          val maxString = input.sortBy(s => s).last
+//          val maxString = input.lift(50).get
+//          (1 to maxString.length).foreach(i => {
+//            val likeString = maxString.slice(0, i)
+//            checkAnswer(
+//              df.filter(s"id like '$likeString%'"),
+//              input.toDF("id").filter(s"id like '$likeString%'").collect())
+//          })
+//        })
+//    }
+//
+//  }
+
+  test("TODO:(fchen) handle subquery case?") {
+    val input = (1 to 100).map {
+      case i if i % 2 == 0 => null
+      case i => i.toString
+    }.toDF("col_1")
+
+    runZIndexTest(
+      input, Array("col_1"),
+      Seq(
+//        FilterTestInfo("col_1 in (select null)", 20, 0),
+//        FilterTestInfo("col_1 not in (select null)", 20, 0)
+//        FilterTestInfo("col_1 exists (select '1')", 20, 0)
+      ),
+      fileNum = 20
+    )
+
+  }
+
+  test("TODO:(fchen) handle implicit conversion case.") {
+    val input = (1 to 100).map {
+      case i if i % 2 == 0 => null
+      case i => i.toString
+    }.toDF("col_1")
+
+    runZIndexTest(
+      input, Array("col_1"),
+      Seq(
+        FilterTestInfo("col_1 = 1", 20, 1)
+      ),
+      fileNum = 20
     )
   }
 
@@ -378,23 +490,26 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
               .format(format)
               .mode("overwrite")
               .save(dir.getCanonicalPath)
-
             ZIndexUtil.createZIndex(
               spark, format, dir.getCanonicalPath, Array("col_1['k2']"),
               fileNum = 20, format = format
             )
-//            ReplaceHadoopFsRelation.relationMetadata.head
-//                ._2
-//                .fileMetadata
-//                .foreach(println)
-//            Thread.sleep(Int.MaxValue)
+
             assert(ReplaceHadoopFsRelation.relationMetadata.headOption.isDefined)
             assert(ReplaceHadoopFsRelation.relationMetadata.head._2.fileMetadata.size == 20)
             val Array(tail, rest @ _*) =
               ReplaceHadoopFsRelation.relationMetadata.head._2.fileMetadata.sortBy(_.file).reverse
-            assert(tail.minMax == Map("col_1.k2" -> ColumnMinMax(null, "b")))
+            assert(
+              tail.columnStatistics == Map(
+                "col_1.k2" -> ColumnStatistics("col_1.k2", Some("b"), Some("b"), true)
+              )
+            )
             rest.foreach(f => {
-              assert(f.minMax == Map("col_1.k2" -> ColumnMinMax(null, null)))
+              assert(
+                f.columnStatistics == Map(
+                  "col_1.k2" -> ColumnStatistics("col_1.k2", None, None, true)
+                )
+              )
             })
         }
     }
@@ -421,7 +536,16 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
             val df = spark.read
               .format(format)
               .load(dir.getCanonicalPath)
-            testFilters(df, filterInfo)
+
+            val filterTestInfoWithResult = filterInfo.map {
+              case filterTestInfo: FilterTestInfo if filterTestInfo.expectedRow.isDefined =>
+                filterTestInfo
+              case filterTestInfo: FilterTestInfo =>
+                filterTestInfo.copy(
+                  expectedRow = Option(input.filter(filterTestInfo.condition).collect())
+                )
+            }
+            testFilters(df, filterTestInfoWithResult)
         }
     }
   }
@@ -444,6 +568,7 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
                                       numRowCount: Long,
                                       expectedRow: Option[Seq[Row]] = None): Unit = {
     val res = df.collect()
+    df.explain(true)
     assert(res.length== numRowCount)
     df.queryExecution.executedPlan.collectLeaves().foreach(l => {
       l.metrics.foreach {
@@ -491,7 +616,8 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
       "=" -> "=",
       "==" -> "==",
       ">=" -> "<=",
-      "<=" -> ">="
+      "<=" -> ">=",
+      "<=>" -> "<=>"
     )
     val arr = condition.split(" ")
       .filter(_ != "")
@@ -510,24 +636,27 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils {
   }
 
   test("aa") {
-    val df = spark.read.load("file:///Users/fchen/Project/bigdata/SparkCube/tmp/zindex/spark-a11c875b-50c3-47c1-99d3-276981741135/part-00019-9eb05fc4-3297-4270-b746-9b949db84c06-c000.snappy.parquet")
-    df.show(truncate = false)
-    df.createOrReplaceTempView("aa")
-    spark.sql("select min(col_1['k2']) as min, max(col_1['k2']) as max from aa")
-      .show
+//    val df = Seq("1", "2", "3")
+//      .toDF("col")
+//    df.show()
+//    df.printSchema()
+//    df.filter("col > 1")
+//      .show
+//    spark.sql("select 1 > null and 1 == 1")
+//      .show
 
-
-
-    val sparkSession = spark
-    import sparkSession.implicits._
-    val df2 = Seq(
-      "a", "b", "c", null
-    ).toDF("ca")
-    df2.createOrReplaceTempView("bb")
-
-//    df.createOrReplaceTempView("aa")
-    spark.sql("select min(ca) as min, max(ca) as max from bb")
-      .show
+//    Seq("a", "b", "c").toDF("ca").write.mode("overwrite").save("/tmp/aaa")
+//    Seq("a").toDF("ca").write.mode("overwrite").save("/tmp/bbb")
+//
+//    spark.read.load("/tmp/bbb").createOrReplaceTempView("bbb")
+//    spark.read.load("/tmp/aaa")
+//      .filter("ca in (select ca from bbb)")
+//      .filter("ca in (select 'a' as ca)")
+//      .filter("ca exists (select ca = 'a')")
+//      .filter("ca inset('a', 'b')")
+//      .show
+//      .explain(true)
+    spark.read.json
 
   }
 
