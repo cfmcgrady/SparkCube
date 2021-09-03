@@ -656,7 +656,43 @@ class ZIndexEndToEndSuite extends QueryTest with SQLMetricsTestUtils with Before
 //      .filter("ca inset('a', 'b')")
 //      .show
 //      .explain(true)
-    spark.read.json
+
+
+    val sql =
+      """
+        |SELECT * FROM lineorder
+        |JOIN date ON lo_orderdate = d_datekey
+        |JOIN customer ON lo_custkey = c_custkey
+        |JOIN supplier ON lo_suppkey = s_suppkey
+        |JOIN part ON lo_partkey = p_partkey
+        |DISTRIBUTE BY random()
+        |""".stripMargin
+
+    import org.apache.spark.sql.functions._
+
+    spark.range(1, 3)
+      .withColumn("part_id", explode(expr("array(1, 2)")))
+      .write
+      .mode("overwrite")
+      .partitionBy("part_id")
+      .save("/tmp/tb_test")
+
+    spark.read.load("/tmp/tb_test")
+      .filter("part_id = '1'")
+      .show()
+
+    Thread.sleep(Int.MaxValue)
+
+//    val df = spark.read.load("/tmp/event.parquet")
+//
+//    df.createOrReplaceTempView("aa")
+//    val sql = """
+//      |select * from (
+//      |select physicalPlanDescription as pp from aa
+//      |) where pp like '%FileScan%' and (pp like '%Filter%' or pp like '%filter%')
+//      |""".stripMargin
+//    spark.sql(sql).limit(1).show(truncate = false)
+//    spark.sql(sql).write.format("json").mode("overwrite").save("/tmp/a.json")
 
   }
 

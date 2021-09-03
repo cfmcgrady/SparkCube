@@ -8,7 +8,6 @@ import org.apache.spark.sql.catalyst.parser.ParserInterface
 import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, RepartitionByExpression}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning}
 import org.apache.spark.sql.execution.BucketInfoExtensions.ExtensionsBuilder
-import org.apache.spark.sql.execution.SparkPlan
 
 class RepartitionByHiveHashExpression(partitionExpressionsx: Seq[Expression],
                                       childx: LogicalPlan,
@@ -57,8 +56,8 @@ class PartitionExtensions extends ExtensionsBuilder with Logging {
     logInfo("register extension PartitionExtensions.")
 //    sessionExtensions.injectPlannerStrategy(_ => new RepartitionByHiveHashStrategy)
 //    sessionExtensions.injectOptimizerRule(_ => ReplaceHadoopFsRelation())
-    sessionExtensions.injectResolutionRule(_ => ReplaceHadoopFsRelation())
-//    sessionExtensions.injectPostHocResolutionRule(_ => ReplaceHadoopFsRelation())
+//    sessionExtensions.injectResolutionRule(_ => ReplaceHadoopFsRelation())
+    sessionExtensions.injectPostHocResolutionRule(_ => ReplaceHadoopFsRelation())
   }
 }
 

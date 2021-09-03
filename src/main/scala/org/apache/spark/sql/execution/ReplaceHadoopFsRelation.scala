@@ -17,9 +17,8 @@ import org.apache.spark.unsafe.types.UTF8String
 case class ReplaceHadoopFsRelation() extends Rule[LogicalPlan] {
   override def apply(plan: LogicalPlan): LogicalPlan = {
     plan resolveOperators {
-      case f @ Filter(cond,
-      logicalRelation @ LogicalRelation(
-      relation @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _))
+      case logicalRelation @ LogicalRelation(
+      relation @ HadoopFsRelation(location: InMemoryFileIndex, _, _, _, _, _), _, _, _)
         if ReplaceHadoopFsRelation.relationMetadata.contains(
           s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`") =>
 
@@ -30,9 +29,7 @@ case class ReplaceHadoopFsRelation() extends Rule[LogicalPlan] {
           s"${relation.fileFormat.toString.toLowerCase()}.`${location.rootPaths.mkString(",").toLowerCase}`",
           relation.sparkSession, Seq(new Path(zIndexMetadata.basePath)), Map.empty, Option(relation.schema))
         val newRelation = relation.copy(location = newLocation)(relation.sparkSession)
-        val newLogicalRelation = logicalRelation.copy(relation = newRelation)
-        val newFilter = f.copy(cond, newLogicalRelation)
-        newFilter
+        logicalRelation.copy(relation = newRelation)
     }
   }
 }
